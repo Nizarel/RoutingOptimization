@@ -9,11 +9,14 @@ param tags object = {}
 @description('Key Vault name.')
 param name string
 
-@description('Object ID granted Key Vault Secrets Officer role. Empty to skip.')
+@description('Object ID granted Key Vault Secrets Officer role (typically the deploying user). Empty to skip.')
 param principalId string = ''
 
 @allowed(['User', 'ServicePrincipal'])
 param principalType string = 'User'
+
+@description('Object ID of the application principal (typically a UAMI) granted Key Vault Secrets User (read-only). Empty to skip.')
+param appPrincipalId string = ''
 
 resource kv 'Microsoft.KeyVault/vaults@2024-04-01-preview' = {
   name: name
@@ -42,6 +45,19 @@ resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = i
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsOfficerRoleId)
     principalId: principalId
     principalType: principalType
+  }
+}
+
+// Key Vault Secrets User (read secret values at runtime)
+var secretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
+
+resource appRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(appPrincipalId)) {
+  scope: kv
+  name: guid(kv.id, appPrincipalId, secretsUserRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsUserRoleId)
+    principalId: appPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 

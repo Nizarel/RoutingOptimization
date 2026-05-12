@@ -10,8 +10,11 @@ param accountName string
 @description('SQL database name.')
 param databaseName string = 'routing_optimization'
 
-@description('Object ID of the principal that gets Cosmos SQL data-plane access. Empty to skip.')
+@description('Object ID of the principal (typically the deploying user) that gets Cosmos SQL data-plane access. Empty to skip.')
 param principalId string = ''
+
+@description('Object ID of the application principal (typically a UAMI) that gets Cosmos SQL data-plane access at runtime. Empty to skip.')
+param appPrincipalId string = ''
 
 resource account 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
   name: accountName
@@ -93,6 +96,16 @@ resource roleAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignment
   properties: {
     roleDefinitionId: '${account.id}/sqlRoleDefinitions/${dataContributorRoleId}'
     principalId: principalId
+    scope: account.id
+  }
+}
+
+resource appRoleAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (!empty(appPrincipalId)) {
+  parent: account
+  name: guid(account.id, appPrincipalId, dataContributorRoleId)
+  properties: {
+    roleDefinitionId: '${account.id}/sqlRoleDefinitions/${dataContributorRoleId}'
+    principalId: appPrincipalId
     scope: account.id
   }
 }

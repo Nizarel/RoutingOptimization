@@ -13,6 +13,9 @@
     },
     "principalType": {
       "value": "${AZURE_PRINCIPAL_TYPE=User}"
+    },
+    "externalIngress": {
+      "value": "${EXTERNAL_INGRESS=false}"
     }
   }
 }

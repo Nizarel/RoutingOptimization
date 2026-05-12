@@ -29,6 +29,12 @@ from src.tools._excel import pick, read_sheet, to_bool, to_float, to_int, to_str
 
 log = get_logger(__name__)
 
+_ILLEGAL_ID_CHARS = str.maketrans({"/": "-", "\\": "-", "?": "-", "#": "-"})
+
+
+def _safe_id(value: str) -> str:
+    return value.translate(_ILLEGAL_ID_CHARS).strip()
+
 
 # --- Locations sheet ---------------------------------------------------------
 
@@ -44,7 +50,7 @@ def _row_to_location(row: dict[str, Any]) -> Location | None:
     location_type = to_str(pick(row, "location_type", "type"), default="Unknown") or "Unknown"
 
     return Location(
-        id=code,
+        id=_safe_id(code),
         location_code=code,
         location_type=location_type,  # type: ignore[arg-type]
         description=to_str(pick(row, "description", "name", "banner")),
@@ -66,7 +72,7 @@ def _row_to_location(row: dict[str, Any]) -> Location | None:
         ),
         bh_loc_code=to_str(pick(row, "bh_loc_code", "backhaul_code")),
         obc_loc_code=to_str(pick(row, "obc_loc_code", "obc_code")),
-        is_enabled=to_bool(pick(row, "is_enabled", "enabled"), default=True),
+        is_enabled=to_bool(pick(row, "is_enabled_for_site", "is_enabled", "enabled"), default=True),
     )
 
 
@@ -76,10 +82,12 @@ _CUBE_HEADER_RE_PARTS = ("cube", "stop")
 
 
 def _row_to_trailer(row: dict[str, Any]) -> TrailerType | None:
-    desc = to_str(pick(row, "trailer_type_description", "trailer_type", "description"))
+    desc = to_str(pick(row, "trailer_type_description", "description"))
     if desc is None:
         return None
-    trailer_class = to_str(pick(row, "trailer_class", "class"), default="Single") or "Single"
+    # In the customer workbook the column ``Trailer Type`` actually holds the
+    # trailer *class* (Combo / Single).
+    trailer_class = to_str(pick(row, "trailer_type", "trailer_class", "class"), default="Single") or "Single"
     if trailer_class not in ("Combo", "Single"):
         trailer_class = "Combo" if "+" in desc else "Single"
 
@@ -102,16 +110,16 @@ def _row_to_trailer(row: dict[str, Any]) -> TrailerType | None:
         else:
             return None
 
-    safe_id = desc.replace("'", "ft").replace(" ", "")
+    safe_id = _safe_id(desc.replace("'", "ft").replace(" ", ""))
 
     return TrailerType(
         id=safe_id,
         trailer_class=trailer_class,  # type: ignore[arg-type]
         trailer_type_description=desc,
-        dollies=to_int(pick(row, "dollies"), default=2 if trailer_class == "Combo" else 0),
-        lead_weight_max_lbs=to_int(pick(row, "lead_weight_max_lbs", "lead_weight_max", "lead_max_lbs")),
-        pup_weight_max_lbs=to_int(pick(row, "pup_weight_max_lbs", "pup_weight_max", "pup_max_lbs")),
-        total_weight_max_lbs=to_int(pick(row, "total_weight_max_lbs", "total_weight_max", "max_weight_lbs")),
+        dollies=to_int(pick(row, "dolly", "dollies"), default=2 if trailer_class == "Combo" else 0),
+        lead_weight_max_lbs=to_int(pick(row, "lead_weight", "lead_weight_max_lbs", "lead_weight_max", "lead_max_lbs")),
+        pup_weight_max_lbs=to_int(pick(row, "pup_weight", "pup_weight_max_lbs", "pup_weight_max", "pup_max_lbs")),
+        total_weight_max_lbs=to_int(pick(row, "total_weight", "total_weight_max_lbs", "total_weight_max", "max_weight_lbs")),
         cube_by_stops=cube_by_stops,
         max_stops_supported=len(cube_by_stops),
     )
@@ -121,20 +129,21 @@ def _row_to_trailer(row: dict[str, Any]) -> TrailerType | None:
 
 def _row_to_restriction(row: dict[str, Any]) -> StateRestriction | None:
     state = to_str(pick(row, "state", "st"))
-    trailer_type = to_str(pick(row, "trailer_type", "combo", "trailer"))
+    trailer_type = to_str(pick(row, "trailer_restrictions", "trailer_type", "combo", "trailer"))
     if not state or not trailer_type:
         return None
     trailer_class = to_str(pick(row, "trailer_class", "class"))
     if trailer_class not in ("Combo", "Single"):
         trailer_class = "Combo" if "+" in trailer_type else "Single"
     return StateRestriction(
-        id=f"{state}_{trailer_type}",
+        id=_safe_id(f"{state}_{trailer_type}"),
         state=state,
         trailer_type=trailer_type,
         trailer_class=trailer_class,  # type: ignore[arg-type]
-        max_weight_lbs=to_int(pick(row, "max_weight_lbs", "max_weight", "weight_lbs")),
+        max_weight_lbs=to_int(pick(row, "weight_restrictions", "max_weight_lbs", "max_weight", "weight_lbs")),
         within_2mi_interstate_only=to_bool(
-            pick(row, "within_2mi_interstate_only", "interstate_only"), default=False
+            pick(row, "within_2_miles_of_interstate", "within_2mi_interstate_only", "interstate_only"),
+            default=False,
         ),
         max_distance_from_interstate_mi=to_float(
             pick(row, "max_distance_from_interstate_mi", "max_distance_mi"), default=0.0
@@ -158,7 +167,7 @@ def _derive_districts(locations: list[Location], dc_code: str) -> list[District]
         banners = sorted({loc.description for loc in stores if loc.description})
         districts.append(
             District(
-                id=handle,
+                id=_safe_id(handle),
                 dc_code=dc_code,
                 district_handle=handle,
                 description=stores[0].district_description or handle,
@@ -185,7 +194,7 @@ async def ingest_locations(req: IngestLocationsRequest) -> IngestLocationsRespon
     loc_df = read_sheet(req.file_path, req.locations_sheet)
     locations = [m for r in loc_df.to_dict(orient="records") if (m := _row_to_location(r))]
 
-    trailer_df = read_sheet(req.file_path, req.trailer_sheet)
+    trailer_df = read_sheet(req.file_path, req.trailer_sheet, header=req.trailer_header_row)
     trailers = [m for r in trailer_df.to_dict(orient="records") if (m := _row_to_trailer(r))]
 
     rest_df = read_sheet(req.file_path, req.restriction_sheet)

@@ -36,8 +36,9 @@ class OptimizeRouteResponse(BaseModel):
 class IngestLocationsRequest(BaseModel):
     file_path: str
     locations_sheet: str = "Locations"
-    trailer_sheet: str = "Max Weight & Cube"
-    restriction_sheet: str = "By State Combo & Weight"
+    trailer_sheet: str = "Max weight and Cube"
+    trailer_header_row: int = 6  # header lives on Excel row 7 in the customer workbook
+    restriction_sheet: str = "By State Combo and Weight"
 
 
 class IngestLocationsResponse(BaseModel):

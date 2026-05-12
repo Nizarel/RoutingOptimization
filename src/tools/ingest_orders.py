@@ -19,6 +19,12 @@ from src.tools._excel import pick, read_sheet, to_float, to_int, to_str
 
 log = get_logger(__name__)
 
+_ILLEGAL_ID_CHARS = str.maketrans({"/": "-", "\\": "-", "?": "-", "#": "-"})
+
+
+def _safe_id(value: str) -> str:
+    return value.translate(_ILLEGAL_ID_CHARS).strip()
+
 
 def _row_to_line(row: dict[str, Any]) -> tuple[str, OrderLine] | None:
     dest = to_str(pick(row, "destination", "dest", "store_code", "destination_code"))
@@ -52,7 +58,7 @@ def _aggregate(rows: list[dict[str, Any]], dc_code: str) -> tuple[str | None, li
         dest, line = parsed
         by_dest[dest].append(line)
         m = meta[dest]
-        m.setdefault("destination_desc", to_str(pick(raw, "destination_desc", "destination_description", "store_name", "banner")))
+        m.setdefault("destination_desc", to_str(pick(raw, "dest_desc", "destination_desc", "destination_description", "store_name", "banner")))
         m.setdefault("district", to_str(pick(raw, "district", "district_handle")))
         m.setdefault("state", to_str(pick(raw, "state", "st")))
         m.setdefault("site", to_str(pick(raw, "site")))
@@ -72,7 +78,7 @@ def _aggregate(rows: list[dict[str, Any]], dc_code: str) -> tuple[str | None, li
         m = meta[dest]
         boards.append(
             OrderBoard(
-                id=f"{og_value}_{dest}",
+                id=_safe_id(f"{og_value}_{dest}"),
                 order_group=og_value,
                 dc_code=dc_code,
                 site=m.get("site"),

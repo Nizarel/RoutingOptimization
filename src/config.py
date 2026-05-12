@@ -28,7 +28,11 @@ class Settings(BaseSettings):
 
     # --- Azure Maps (skeleton: unused; Haversine stub) ---
     azure_maps_subscription_key: str | None = None
+    azure_maps_client_id: str | None = None
     azure_maps_base_url: str = "https://atlas.microsoft.com"
+
+    # --- Observability ---
+    application_insights_connection_string: str | None = None
 
     # --- MCP transport ---
     mcp_transport: Literal["http", "stdio"] = "http"
