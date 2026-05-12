@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel>=0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "routing-optimization-mcp"
+version = "0.1.0"
+description = "Routing Optimization MCP Server for Albertsons (FastMCP + OR-Tools + Azure Maps + Cosmos DB)"
+requires-python = ">=3.13"
+authors = [{ name = "Nizar El Ouarti" }]
+readme = "README.md"
+license = { text = "Proprietary" }
+
+dependencies = [
+  "fastmcp>=3.2.4",
+  "ortools>=9.14.6206",
+  "httpx>=0.28.1",
+  "pydantic>=2.13.4",
+  "pydantic-settings>=2.14.1",
+  "azure-cosmos>=4.15.0",
+  "azure-identity>=1.25.3",
+  "pandas>=3.0.3",
+  "openpyxl>=3.1.5",
+  "python-dotenv>=1.2.2",
+  "structlog>=25.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.3",
+  "pytest-asyncio>=1.3.0",
+  "pytest-cov>=7.1.0",
+  "ruff>=0.15.12",
+  "mypy>=2.1.0",
+]
+
+[project.scripts]
+routing-mcp = "server:main"
+seed-data = "scripts.seed_data:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "PL"]
+ignore = ["PLR0913", "PLR2004"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+markers = [
+  "integration: tests that hit live Cosmos DB (require AZURE_COSMOS_ENDPOINT)",
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = false
+ignore_missing_imports = true

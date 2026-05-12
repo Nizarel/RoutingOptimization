@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+.envrc
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Azure / azd
+.azure/
+azd-env-*.env
+
+# Customer data (Excel inputs - do not commit)
+data/*.xlsx
+data/*.xls
+data/*.csv
+!data/.gitkeep
+
+# Logs
+*.log
+logs/
