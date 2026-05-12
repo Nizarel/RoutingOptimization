@@ -3,11 +3,17 @@ name: routing-optimization-mcp
 metadata:
   template: routing-optimization-mcp@0.1.0
 
-# NOTE: Container Apps deployment is intentionally deferred to a later milestone.
-# `azd provision` provisions Cosmos DB + Key Vault only. `azd deploy` is a no-op
-# until a `services:` section is added.
-
 infra:
   provider: bicep
   path: infra
   module: main
+
+services:
+  mcp:
+    project: .
+    host: containerapp
+    language: python
+    docker:
+      path: ./Dockerfile
+      context: .
+      remoteBuild: true
