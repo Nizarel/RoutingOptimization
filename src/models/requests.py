@@ -140,3 +140,99 @@ class RouteViolation(BaseModel):
 class ValidateRouteResponse(BaseModel):
     compliance: ComplianceReport
     violations: list[RouteViolation] = Field(default_factory=list)
+
+
+# --- geocode_address ---
+
+class GeocodeRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    country_code: str | None = Field(default=None, description="ISO 3166-1 alpha-2, e.g. 'US'")
+    top: int = Field(default=1, ge=1, le=10)
+
+
+class GeocodeCandidate(BaseModel):
+    formatted_address: str
+    lat: float
+    lon: float
+    confidence: float | None = None
+    match_type: str | None = None
+
+
+class GeocodeResponse(BaseModel):
+    query: str
+    candidates: list[GeocodeCandidate] = Field(default_factory=list)
+    from_stub: bool = False
+
+
+# --- directions ---
+
+class GeoPointLL(BaseModel):
+    """Lat/lon point distinct from the GeoJSON ``GeoPoint`` schema (no coordinates list)."""
+    lat: float
+    lon: float
+
+
+class DirectionsRequest(BaseModel):
+    origin: GeoPointLL
+    destination: GeoPointLL
+    waypoints: list[GeoPointLL] = Field(default_factory=list)
+    profile: str = "truck"
+    avoid: list[str] = Field(default_factory=list)
+
+
+class DirectionsLeg(BaseModel):
+    start: GeoPointLL
+    end: GeoPointLL
+    distance_m: float
+    duration_sec: float
+
+
+class DirectionsResponse(BaseModel):
+    distance_m: float
+    duration_sec: float
+    legs: list[DirectionsLeg] = Field(default_factory=list)
+    from_stub: bool = False
+
+
+# --- isochrone ---
+
+class IsochroneRequest(BaseModel):
+    origin: GeoPointLL
+    max_minutes: int = Field(..., ge=1, le=180)
+    profile: str = "truck"
+
+
+class IsochroneResponse(BaseModel):
+    origin: GeoPointLL
+    max_minutes: int
+    polygon: list[list[float]] = Field(
+        default_factory=list,
+        description="GeoJSON-style polygon ring; each entry is [lon, lat].",
+    )
+    reachable_area_km2: float | None = None
+    from_stub: bool = False
+
+
+# --- map_render ---
+
+class MapPin(BaseModel):
+    lat: float
+    lon: float
+    label: str | None = None
+
+
+class MapRenderRequest(BaseModel):
+    center: GeoPointLL | None = None
+    zoom: int = Field(default=8, ge=0, le=20)
+    width: int = Field(default=800, ge=80, le=2000)
+    height: int = Field(default=600, ge=80, le=1500)
+    pins: list[MapPin] = Field(default_factory=list)
+    path_points: list[GeoPointLL] = Field(default_factory=list)
+
+
+class MapRenderResponse(BaseModel):
+    image_base64: str
+    content_type: str = "image/png"
+    width: int
+    height: int
+    from_stub: bool = False

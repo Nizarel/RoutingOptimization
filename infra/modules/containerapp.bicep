@@ -153,11 +153,39 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           probes: [
             {
               type: 'Liveness'
-              tcpSocket: {
+              httpGet: {
+                path: '/healthz'
                 port: targetPort
+                scheme: 'HTTP'
               }
               initialDelaySeconds: 10
               periodSeconds: 30
+              timeoutSeconds: 3
+              failureThreshold: 3
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/readyz'
+                port: targetPort
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 3
+            }
+            {
+              type: 'Startup'
+              httpGet: {
+                path: '/healthz'
+                port: targetPort
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 5
+              timeoutSeconds: 3
+              failureThreshold: 30
             }
           ]
         }

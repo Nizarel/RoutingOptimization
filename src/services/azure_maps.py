@@ -255,6 +255,338 @@ async def get_matrix(
         return _haversine_matrix(points)
 
 
+# ── Geocode / Directions / Isochrone / Map Render ───────────────────────────
+
+import base64
+
+# Single-pixel transparent PNG used as the offline-stub for map_render.
+_STUB_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
+
+# Process-wide LRU cache for geocode results.
+_GEOCODE_CACHE: dict[tuple[str, str | None, int], list[dict]] = {}
+_GEOCODE_CACHE_LOCK = asyncio.Lock()
+_GEOCODE_CACHE_MAX = 512
+
+
+@dataclass(slots=True)
+class GeocodeHit:
+    formatted_address: str
+    lat: float
+    lon: float
+    confidence: float | None = None
+    match_type: str | None = None
+
+
+async def geocode(query: str, *, country: str | None = None, top: int = 1) -> list[GeocodeHit]:
+    """Geocode a free-form address via Azure Maps Search Address v1.
+
+    Returns ``[]`` when ``azure_maps_client_id`` is not configured (offline stub)
+    or when the upstream call fails.
+    """
+    settings = get_settings()
+    client_id = settings.azure_maps_client_id
+    if not client_id:
+        log.info("azure_maps.geocode_stub", reason="client_id_not_set", query=query)
+        return []
+
+    key = (query.strip().lower(), country, top)
+    async with _GEOCODE_CACHE_LOCK:
+        cached = _GEOCODE_CACHE.get(key)
+        if cached is not None:
+            return [GeocodeHit(**h) for h in cached]
+
+    try:
+        token = await _get_token(settings)
+        params: dict[str, str | int] = {
+            "api-version": "1.0",
+            "query": query,
+            "limit": top,
+        }
+        if country:
+            params["countrySet"] = country
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{settings.azure_maps_base_url}/search/address/json",
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "x-ms-client-id": client_id},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("azure_maps.geocode_failed", error=str(exc), query=query)
+        return []
+
+    hits: list[GeocodeHit] = []
+    for r in data.get("results", [])[:top]:
+        pos = r.get("position", {})
+        addr = r.get("address", {})
+        hits.append(
+            GeocodeHit(
+                formatted_address=addr.get("freeformAddress", query),
+                lat=float(pos.get("lat", 0.0)),
+                lon=float(pos.get("lon", 0.0)),
+                confidence=float(r["score"]) if "score" in r else None,
+                match_type=r.get("matchConfidence", {}).get("score") if isinstance(r.get("matchConfidence"), dict) else r.get("type"),
+            )
+        )
+
+    async with _GEOCODE_CACHE_LOCK:
+        if len(_GEOCODE_CACHE) >= _GEOCODE_CACHE_MAX:
+            _GEOCODE_CACHE.pop(next(iter(_GEOCODE_CACHE)))
+        _GEOCODE_CACHE[key] = [h.__dict__ for h in hits]
+    return hits
+
+
+@dataclass(slots=True)
+class DirectionsLegResult:
+    start_lat: float
+    start_lon: float
+    end_lat: float
+    end_lon: float
+    distance_m: float
+    duration_sec: float
+
+
+@dataclass(slots=True)
+class DirectionsResult:
+    distance_m: float
+    duration_sec: float
+    legs: list[DirectionsLegResult]
+    from_stub: bool = False
+
+
+def _haversine_directions(
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    waypoints: list[tuple[float, float]],
+) -> DirectionsResult:
+    pts = [origin, *waypoints, destination]
+    legs: list[DirectionsLegResult] = []
+    total_d = 0.0
+    total_t = 0.0
+    for i in range(len(pts) - 1):
+        d = _haversine_m(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1])
+        t = d / _AVG_TRUCK_SPEED_MPS
+        legs.append(DirectionsLegResult(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], d, t))
+        total_d += d
+        total_t += t
+    return DirectionsResult(distance_m=total_d, duration_sec=total_t, legs=legs, from_stub=True)
+
+
+async def directions(
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    *,
+    waypoints: list[tuple[float, float]] | None = None,
+    profile: str = "truck",
+    avoid: list[str] | None = None,
+) -> DirectionsResult:
+    """Compute a route via Azure Maps Directions v1.
+
+    ``origin``/``destination``/``waypoints`` are ``(lat, lon)`` tuples.
+    Falls back to a single-leg Haversine stub when ``azure_maps_client_id`` is
+    not configured or the upstream call fails.
+    """
+    settings = get_settings()
+    client_id = settings.azure_maps_client_id
+    waypoints = waypoints or []
+    if not client_id:
+        log.info("azure_maps.directions_stub", reason="client_id_not_set")
+        return _haversine_directions(origin, destination, waypoints)
+
+    coord_list = [origin, *waypoints, destination]
+    query = ":".join(f"{lat},{lon}" for lat, lon in coord_list)
+    params: dict[str, str] = {
+        "api-version": "1.0",
+        "query": query,
+        "travelMode": profile,
+        "routeType": "fastest",
+    }
+    if avoid:
+        params["avoid"] = ",".join(avoid)
+    try:
+        token = await _get_token(settings)
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{settings.azure_maps_base_url}/route/directions/json",
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "x-ms-client-id": client_id},
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("azure_maps.directions_failed", error=str(exc))
+        return _haversine_directions(origin, destination, waypoints)
+
+    routes = data.get("routes", [])
+    if not routes:
+        return _haversine_directions(origin, destination, waypoints)
+    route = routes[0]
+    summary = route.get("summary", {})
+    legs_out: list[DirectionsLegResult] = []
+    for i, leg in enumerate(route.get("legs", [])):
+        ls = leg.get("summary", {})
+        start = coord_list[i]
+        end = coord_list[min(i + 1, len(coord_list) - 1)]
+        legs_out.append(
+            DirectionsLegResult(
+                start_lat=start[0],
+                start_lon=start[1],
+                end_lat=end[0],
+                end_lon=end[1],
+                distance_m=float(ls.get("lengthInMeters", 0)),
+                duration_sec=float(ls.get("travelTimeInSeconds", 0)),
+            )
+        )
+    return DirectionsResult(
+        distance_m=float(summary.get("lengthInMeters", 0)),
+        duration_sec=float(summary.get("travelTimeInSeconds", 0)),
+        legs=legs_out,
+        from_stub=False,
+    )
+
+
+@dataclass(slots=True)
+class IsochroneResult:
+    polygon: list[list[float]]  # list of [lon, lat]
+    reachable_area_km2: float | None
+    from_stub: bool = False
+
+
+def _stub_isochrone(origin: tuple[float, float], max_minutes: int) -> IsochroneResult:
+    """32-vertex circle whose radius matches ``max_minutes`` at ~45 mph."""
+    lat0, lon0 = origin
+    radius_m = _AVG_TRUCK_SPEED_MPS * 60 * max_minutes
+    # Approx degrees per meter (lat is ~constant, lon depends on cos(lat))
+    deg_per_m_lat = 1.0 / 111_320.0
+    deg_per_m_lon = 1.0 / (111_320.0 * max(math.cos(math.radians(lat0)), 1e-6))
+    vertices: list[list[float]] = []
+    for k in range(32):
+        theta = 2 * math.pi * k / 32
+        dlat = radius_m * math.sin(theta) * deg_per_m_lat
+        dlon = radius_m * math.cos(theta) * deg_per_m_lon
+        vertices.append([lon0 + dlon, lat0 + dlat])
+    vertices.append(vertices[0])  # close ring
+    area_km2 = math.pi * (radius_m / 1000.0) ** 2
+    return IsochroneResult(polygon=vertices, reachable_area_km2=area_km2, from_stub=True)
+
+
+async def isochrone(
+    origin: tuple[float, float],
+    max_minutes: int,
+    *,
+    profile: str = "truck",
+) -> IsochroneResult:
+    """Compute an isochrone polygon via Azure Maps Route Range v1.
+
+    Falls back to a 32-vertex Haversine circle stub when offline.
+    """
+    settings = get_settings()
+    client_id = settings.azure_maps_client_id
+    if not client_id:
+        log.info("azure_maps.isochrone_stub", reason="client_id_not_set")
+        return _stub_isochrone(origin, max_minutes)
+
+    try:
+        token = await _get_token(settings)
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{settings.azure_maps_base_url}/route/range/json",
+                params={
+                    "api-version": "1.0",
+                    "query": f"{origin[0]},{origin[1]}",
+                    "travelMode": profile,
+                    "timeBudgetInSec": max_minutes * 60,
+                },
+                headers={"Authorization": f"Bearer {token}", "x-ms-client-id": client_id},
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("azure_maps.isochrone_failed", error=str(exc))
+        return _stub_isochrone(origin, max_minutes)
+
+    boundary = data.get("reachableRange", {}).get("boundary", [])
+    polygon = [[float(p["longitude"]), float(p["latitude"])] for p in boundary]
+    if polygon and polygon[0] != polygon[-1]:
+        polygon.append(polygon[0])
+    return IsochroneResult(polygon=polygon, reachable_area_km2=None, from_stub=False)
+
+
+@dataclass(slots=True)
+class MapRenderResult:
+    image_base64: str
+    width: int
+    height: int
+    from_stub: bool = False
+
+
+async def render_map(
+    *,
+    center: tuple[float, float] | None,
+    zoom: int = 8,
+    width: int = 800,
+    height: int = 600,
+    pins: list[tuple[float, float, str | None]] | None = None,
+    path_points: list[tuple[float, float]] | None = None,
+) -> MapRenderResult:
+    """Render a static PNG via Azure Maps Render v2.
+
+    Returns a 1x1 transparent PNG stub when ``azure_maps_client_id`` is unset.
+    """
+    settings = get_settings()
+    client_id = settings.azure_maps_client_id
+    pins = pins or []
+    path_points = path_points or []
+    if not client_id:
+        log.info("azure_maps.map_render_stub", reason="client_id_not_set")
+        return MapRenderResult(image_base64=_STUB_PNG_BASE64, width=1, height=1, from_stub=True)
+
+    params: dict[str, str | int] = {
+        "api-version": "2024-04-01",
+        "tilesetId": "microsoft.base.road",
+        "width": width,
+        "height": height,
+        "zoom": zoom,
+    }
+    if center is not None:
+        params["center"] = f"{center[1]},{center[0]}"  # lon,lat
+    if pins:
+        pin_parts = ["default|co0078D4"]
+        for lat, lon, label in pins:
+            pin_parts.append(f"||{lon} {lat}" + (f' "{label}"' if label else ""))
+        params["pins"] = "".join(pin_parts)
+    if path_points:
+        path = "lcFF0000|lw3|" + "|".join(f"{lon} {lat}" for lat, lon in path_points)
+        params["path"] = path
+    try:
+        token = await _get_token(settings)
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{settings.azure_maps_base_url}/map/static/png",
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "x-ms-client-id": client_id},
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            png_bytes = resp.content
+    except Exception as exc:  # noqa: BLE001
+        log.warning("azure_maps.map_render_failed", error=str(exc))
+        return MapRenderResult(image_base64=_STUB_PNG_BASE64, width=1, height=1, from_stub=True)
+
+    return MapRenderResult(
+        image_base64=base64.b64encode(png_bytes).decode("ascii"),
+        width=width,
+        height=height,
+        from_stub=False,
+    )
+
+
 # ── Type stubs for cache helpers (avoid circular import) ─────────────────────
 # These match the fields accessed on MatrixCacheEntry; no runtime import needed.
 class MatrixCacheEntryDict:  # pragma: no cover

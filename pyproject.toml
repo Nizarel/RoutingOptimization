@@ -24,6 +24,9 @@ dependencies = [
   "openpyxl>=3.1.5",
   "python-dotenv>=1.2.2",
   "structlog>=25.5.0",
+  "azure-monitor-opentelemetry>=1.6.0",
+  "opentelemetry-instrumentation-httpx>=0.51b0",
+  "starlette>=0.40.0",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +36,8 @@ dev = [
   "pytest-cov>=7.1.0",
   "ruff>=0.15.12",
   "mypy>=2.1.0",
+  "locust>=2.32.0",
+  "httpx>=0.28.1",
 ]
 
 [project.scripts]
