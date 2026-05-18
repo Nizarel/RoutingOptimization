@@ -57,6 +57,10 @@ class ComplianceReport(BaseModel):
     state_restrictions_passed: bool | None = None
     curfew_violations: int | None = None
     weight_violations: int | None = None
+    state_violations: list[str] = Field(default_factory=list)
+    interstate_violations: list[str] = Field(default_factory=list)
+    cube_violations: list[str] = Field(default_factory=list)
+    evaluated_at: datetime | None = None
     status: Literal["evaluated", "not_evaluated"] = "not_evaluated"
 
 

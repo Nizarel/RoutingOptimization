@@ -22,3 +22,7 @@ class MatrixCacheRepo(BaseRepository[MatrixCacheEntry]):
         self, location_codes: list[str], profile: str
     ) -> MatrixCacheEntry | None:
         return await self.get(self.make_key(location_codes), partition_key=profile)
+
+    async def put_cached(self, entry: MatrixCacheEntry) -> MatrixCacheEntry:
+        """Upsert a cache entry; returns the entry unchanged."""
+        return await self.upsert(entry)

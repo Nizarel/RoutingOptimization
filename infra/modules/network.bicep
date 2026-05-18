@@ -16,6 +16,12 @@ param acaSubnetName string = 'snet-aca-infra'
 @description('Address prefix for the ACA infrastructure subnet (must be /23 or larger for Consumption profile).')
 param acaSubnetPrefix string = '10.30.0.0/23'
 
+@description('Subnet name reserved for private endpoints (Cosmos, Key Vault, etc.).')
+param peSubnetName string = 'snet-pe'
+
+@description('Address prefix for the private-endpoint subnet.')
+param peSubnetPrefix string = '10.30.2.0/24'
+
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
   location: location
@@ -39,6 +45,13 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           ]
         }
       }
+      {
+        name: peSubnetName
+        properties: {
+          addressPrefix: peSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
     ]
   }
 }
@@ -46,3 +59,4 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
 output vnetId string = vnet.id
 output vnetName string = vnet.name
 output acaSubnetId string = '${vnet.id}/subnets/${acaSubnetName}'
+output peSubnetId string = '${vnet.id}/subnets/${peSubnetName}'

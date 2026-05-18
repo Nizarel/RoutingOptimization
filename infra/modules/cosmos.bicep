@@ -16,6 +16,12 @@ param principalId string = ''
 @description('Object ID of the application principal (typically a UAMI) that gets Cosmos SQL data-plane access at runtime. Empty to skip.')
 param appPrincipalId string = ''
 
+@description('Resource ID of the VNet to link to the private DNS zone. Empty to skip private-endpoint wiring.')
+param vnetId string = ''
+
+@description('Resource ID of the subnet that hosts the Cosmos private endpoint. Empty to skip.')
+param privateEndpointSubnetId string = ''
+
 resource account 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
   name: accountName
   location: location
@@ -113,3 +119,60 @@ resource appRoleAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignm
 output endpoint string = account.properties.documentEndpoint
 output accountName string = account.name
 output databaseName string = databaseName
+
+// --- Private Endpoint + Private DNS zone (data plane) ---------------------
+
+var enablePrivateLink = !empty(vnetId) && !empty(privateEndpointSubnetId)
+
+resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (enablePrivateLink) {
+  name: 'pe-${accountName}'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: privateEndpointSubnetId
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'plsc-${accountName}'
+        properties: {
+          privateLinkServiceId: account.id
+          groupIds: ['Sql']
+        }
+      }
+    ]
+  }
+}
+
+resource privateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = if (enablePrivateLink) {
+  name: 'privatelink.documents.azure.com'
+  location: 'global'
+  tags: tags
+}
+
+resource zoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = if (enablePrivateLink) {
+  parent: privateDnsZone
+  name: 'link-${last(split(vnetId, '/'))}'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnetId
+    }
+  }
+}
+
+resource peDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (enablePrivateLink) {
+  parent: privateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'cosmos-sql'
+        properties: {
+          privateDnsZoneId: privateDnsZone.id
+        }
+      }
+    ]
+  }
+}

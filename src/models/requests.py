@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from src.models.order import OrderBoard
 from src.models.restriction import StateRestriction
-from src.models.route import RouteResult
+from src.models.route import ComplianceReport, RouteResult, VehicleRoute
 
 
 # --- optimize_route ---
@@ -78,3 +78,65 @@ class GetRestrictionsRequest(BaseModel):
 
 class GetRestrictionsResponse(BaseModel):
     restrictions: list[StateRestriction]
+
+
+# --- matrix_travel_times ---
+
+class MatrixTravelTimesRequest(BaseModel):
+    location_codes: list[str] = Field(..., min_length=2)
+    profile: str = "truck"
+    use_cache: bool = True
+
+
+class MatrixTravelTimesResponse(BaseModel):
+    location_codes: list[str]
+    distance_m: list[list[float]]
+    time_sec: list[list[float]]
+    from_cache: bool
+    profile: str
+
+
+# --- select_trailer ---
+
+class SelectTrailerRequest(BaseModel):
+    stops: list[str] = Field(..., min_length=1)
+    states: list[str] | None = None
+    total_weight_lbs: int = Field(..., ge=0)
+    total_cubes: int = Field(..., ge=0)
+    prefer: Literal["max_capacity", "min_class"] = "max_capacity"
+
+
+class TrailerRecommendation(BaseModel):
+    trailer_type: str
+    trailer_class: Literal["Combo", "Single"]
+    cube_limit: int
+    weight_max_lbs: int
+    cube_utilization_pct: float
+    weight_utilization_pct: float
+    reason: str
+
+
+class SelectTrailerResponse(BaseModel):
+    recommended: TrailerRecommendation | None
+    alternatives: list[TrailerRecommendation] = Field(default_factory=list)
+    states_considered: list[str]
+    infeasible_reason: str | None = None
+
+
+# --- validate_route ---
+
+class ValidateRouteRequest(BaseModel):
+    history_id: str | None = None
+    dc_code: str | None = None
+    route: VehicleRoute | None = None
+
+
+class RouteViolation(BaseModel):
+    vehicle: str
+    category: Literal["state", "interstate", "cube", "weight", "curfew"]
+    detail: str
+
+
+class ValidateRouteResponse(BaseModel):
+    compliance: ComplianceReport
+    violations: list[RouteViolation] = Field(default_factory=list)

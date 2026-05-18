@@ -201,3 +201,77 @@ def solve_cvrptw(
     # OR-Tools status enum: 1 == ROUTING_SUCCESS across recent versions.
     status = "optimal" if int(routing.status()) == 1 else "feasible"
     return SolverSolution(status=status, routes=routes, total_distance_m=total_distance)
+
+
+# ─── Iterative cube-degradation wrapper (spec §9.2) ──────────────────────────
+
+def solve_cvrptw_with_degradation(
+    stops: list[StopInput],
+    vehicles: list[VehicleInput],
+    matrix: Matrix,
+    *,
+    cube_by_stops: list[int],
+    depot_index: int = 0,
+    max_solver_seconds: int = 30,
+    max_iterations: int = 3,
+) -> SolverSolution:
+    """Solve CVRPTW iteratively to honour stop-dependent cube degradation.
+
+    ``cube_by_stops[k]`` is the per-vehicle cube limit when a vehicle visits
+    ``k + 1`` stops (excluding the depot start/end).  This wrapper:
+
+    1. Starts each vehicle at the maximum cube capacity (``cube_by_stops[0]``).
+    2. Solves.
+    3. For each vehicle, counts actual stops and checks
+       ``cubes <= cube_by_stops[actual_stops - 1]``.
+    4. If any vehicle is over, tightens that vehicle's cube_capacity to the
+       degraded limit and re-solves.
+    5. Returns when feasible or after ``max_iterations``.
+
+    Note: ``vehicles[*].cube_capacity`` is mutated across iterations.  Pass
+    fresh ``VehicleInput`` instances if you care about the originals.
+    """
+    if not cube_by_stops:
+        raise ValueError("cube_by_stops must not be empty")
+
+    # Start at the most generous limit.
+    initial_limit = cube_by_stops[0]
+    for v in vehicles:
+        v.cube_capacity = initial_limit
+
+    last_solution: SolverSolution | None = None
+    for iteration in range(1, max_iterations + 1):
+        sol = solve_cvrptw(
+            stops, vehicles, matrix,
+            depot_index=depot_index,
+            max_solver_seconds=max_solver_seconds,
+        )
+        last_solution = sol
+        if sol.status not in {"optimal", "feasible"}:
+            return sol
+
+        # Check every used vehicle against its stop-count-dependent limit.
+        violations: dict[str, int] = {}
+        for r in sol.routes:
+            actual_stops = max(1, len(r.stop_indices) - 2)  # exclude depot start/end
+            idx = min(actual_stops - 1, len(cube_by_stops) - 1)
+            degraded_limit = cube_by_stops[idx]
+            if r.cubes > degraded_limit:
+                violations[r.vehicle] = degraded_limit
+
+        if not violations:
+            return sol
+
+        # Tighten violators for the next iteration.
+        any_tightened = False
+        for v in vehicles:
+            if v.name in violations and v.cube_capacity > violations[v.name]:
+                v.cube_capacity = violations[v.name]
+                any_tightened = True
+        if not any_tightened:
+            # Nothing more to tighten — return current (still violating) solution.
+            return sol
+
+    return last_solution if last_solution is not None else SolverSolution(
+        status="infeasible", routes=[], total_distance_m=0.0
+    )

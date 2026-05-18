@@ -30,13 +30,16 @@ def _register() -> None:
     from src.tools import (  # noqa: F401  (registration via import side-effects)
         ingest_locations,
         ingest_orders,
+        matrix,
         optimize,
         query_orders,
         query_restrictions,
+        select_trailer,
+        validate_route,
     )
     from src.resources import last_solution  # noqa: F401
 
-    log.info("mcp.tools_registered", count=5, resources=1)
+    log.info("mcp.tools_registered", count=8, resources=1)
 
 
 _register()

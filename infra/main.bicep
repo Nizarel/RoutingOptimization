@@ -98,6 +98,8 @@ module cosmos 'modules/cosmos.bicep' = {
     databaseName: 'routing_optimization'
     principalId: principalId
     appPrincipalId: identity.outputs.principalId
+    vnetId: network.outputs.vnetId
+    privateEndpointSubnetId: network.outputs.peSubnetId
   }
 }
 

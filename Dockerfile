@@ -17,4 +17,4 @@ ENV MCP_TRANSPORT=http \
     MCP_HTTP_HOST=0.0.0.0 \
     MCP_HTTP_PORT=8000
 
-CMD ["python", "-m", "src.server"]
+CMD ["python", "-m", "src"]

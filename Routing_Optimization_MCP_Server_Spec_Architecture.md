@@ -31,6 +31,7 @@
 14. [Development Roadmap](#14-development-roadmap)
 15. [Appendix A - Environment Configuration](#15-appendix-a---environment-configuration)
 16. [Appendix B - Project Structure](#16-appendix-b---project-structure)
+17. [Appendix C - Golden Operational Questions (Examples)](#17-appendix-c---golden-operational-questions-examples)
 
 ---
 
@@ -1067,6 +1068,231 @@ routing-optimization-mcp/
 |-- .env.example
 +-- README.md
 ```
+
+---
+
+## 17. Appendix C - Golden Operational Questions (Examples)
+
+This appendix defines example answers for the most important planner and dispatcher
+questions. Each answer is formatted as an actionable output that an agent can
+produce from MCP tools and route history.
+
+### 17.1 Golden Questions with Example Answers
+
+1. **What equipment and driver constraints apply to this route?**
+
+   Example answer:
+   - Route `Trip-1042` is assigned `45+45` combo (doubles), reefer capable.
+   - Trailer cube cap at 4 stops is `3120`; planned cube is `2890` (92.6%).
+   - Total weight cap is `70000 lbs`; planned weight is `62450 lbs` (89.2%).
+   - Driver assignment requires sleeper team due to projected duty time of
+     `11h 45m` including service time and breaks.
+   - Start window is `19:00-20:00` from `52-DC`; hostler required for late
+     outbound yard move.
+
+2. **What exceptions or alerts should the router watch for during execution?**
+
+   Example answer:
+   - Appointment risk: Store `1158` ETA `06:35`, curfew opens `07:00`
+     (early-arrival risk).
+   - Capacity risk: Route `Trip-1045` at `98% cube` and `96% weight`.
+   - Release risk: Wave release delayed `+42 min` at DC for commodity `PER`.
+   - Driver conflict: Assigned backup driver exceeds weekly HOS by `0.8h`.
+   - Temperature conflict: `FLO` and frozen compartment mismatch on one load.
+
+3. **Summarize key differences vs last week's same-commodity routing session.**
+
+   Example answer:
+   - Routes: `18` this week vs `20` last week (`-2`, `-10%`).
+   - Avg cube utilization: `86.9%` vs `81.4%` (`+5.5 pts`).
+   - Total miles: `24,880` vs `26,140` (`-4.8%`).
+   - Store pairing change: `1010+24` now paired; `1010+35` no longer paired.
+   - Driver HOS warnings: `1` this week vs `4` last week.
+   - Equipment mix: doubles `12 -> 10`; singles `8 -> 8`.
+
+4. **Are there any routes that are suboptimal (low cube, high inter-stop miles)?**
+
+   Example answer:
+   - `Trip-1033`: cube `54%`, weight `49%`, 2 stops with long deadhead segment
+     (`142 mi` between stores) -> candidate for merge.
+   - `Trip-1051`: 3 stops but zig-zag pattern adds `71 mi` over district median.
+   - `Trip-1060`: single trailer at `43% cube` while nearby route is at `96%`.
+
+5. **Could routes be improved if cube and weight constraints were +5%?**
+
+   Example answer:
+   - Candidate routes: `Trip-1045`, `Trip-1057`, `Trip-1062`.
+   - Re-optimization with +5% caps reduces routes from `18` to `17`.
+   - Net impact: `-690 miles` (`-2.8%`) and `-1 driver`.
+   - Compliance note: Only applied where state legal weight caps remain satisfied.
+
+6. **Could routes be improved if delivery windows were relaxed by <2 hours?**
+
+   Example answer:
+   - Relaxation scenario (`-2h/+2h`) merges 2 Boise lanes.
+   - Route count `18 -> 16`; total miles `-6.1%`; late risk remains `0` in
+     simulated traffic profile.
+   - Stores impacted: `161`, `183`, `259` with revised ETA bands provided.
+
+7. **Trip XXX load delayed 2 hours (warehouse delay or driver breakdown). What is impact and can we proactively communicate?**
+
+   Example answer:
+   - Impacted trip: `Trip-1042`, departure `+120 min`.
+   - On-time projection: first 2 stops remain on time; stops 3 and 4 become
+     `+35` and `+52 min` late.
+   - Auto-generated notifications:
+     - Store `1010`: "Updated ETA 08:22 (was 07:30)."
+     - Store `20`: "Updated ETA 09:41 (was 08:49)."
+   - Mitigation proposed: swap stop order 3/4 and assign relay at `259`.
+
+8. **How many store-order splits occurred and why?**
+
+   Example answer:
+   - Total splits: `6 stores` (`9 split loads`) in this session.
+   - Primary reasons:
+     - Cube exceeded degradation limit (`4 stores`).
+     - Temperature-zone incompatibility (`1 store`).
+     - State combo restriction forced commodity separation (`1 store`).
+   - Largest split: Store `183`, `41,097 lbs` and `1,939 cubes` split across
+     two departures.
+
+9. **What routes are in danger of missing delivery windows?**
+
+   Example answer:
+   - High-risk routes (`ETA slack < 30 min`): `Trip-1042`, `Trip-1051`.
+   - At-risk stops:
+     - `1158` slack `+12 min`.
+     - `24` slack `+8 min`.
+     - `33` slack `+5 min` (critical).
+   - Recommended action: resequence final two stops on `Trip-1051`.
+
+10. **Weather event blocks store XXX area; remove that store and re-optimize remaining trip.**
+
+    Example answer:
+    - Removed store: `XXX` from `Trip-1066` due to weather closure.
+    - Re-optimized remaining stops into two existing trips with no new vehicle.
+    - Residual impact:
+      - `+44 miles` across affected district.
+      - `-1 failed appointment` (prevented).
+    - Deferred order for `XXX` moved to tomorrow's planning queue.
+
+11. **Hot load: store XXX must be first stop. Re-optimize sequence.**
+
+    Example answer:
+    - Forced precedence: `Store XXX` as first retail stop.
+    - Resulting route remains feasible for weight/cube and curfew windows.
+    - Cost impact: `+3.2% miles`, `+18 min` duration vs unconstrained baseline.
+    - Rationale: service-priority override accepted.
+
+12. **Insufficient doubles available; remove one double and prioritize single trailer conversions.**
+
+    Example answer:
+    - Constraint applied: doubles availability reduced by `1`.
+    - Best downgrade candidates (least cost increase):
+      - `Trip-1038` (`+2.1%` cost if moved to 53ft single).
+      - `Trip-1050` (`+2.7%`).
+      - `Trip-1061` (`+3.4%`).
+    - Selected conversion: `Trip-1038` to single trailer.
+
+13. **Using unconstrained windows + 3-month history, suggest delivery windows for minimum cost.**
+
+    Example answer:
+    - Historical replay found that stores `161`, `259`, `1158` repeatedly force
+      high-cost early arrivals.
+    - Proposed new windows:
+      - `161`: `07:00-13:00` (from `07:00-09:00`).
+      - `259`: `06:00-12:00` (from `06:00-08:00`).
+    - Modeled savings: `-7.4%` miles, `-6.8%` route-hours.
+
+14. **Using 3-month history, find stores averaging <5 pallets by temp zone and suggest reduced delivery frequency (minimum 2 deliveries/week per temp zone).**
+
+    Example answer:
+    - Candidate stores below threshold:
+      - `Store 33` chilled average `4.2 pallets/delivery`.
+      - `Store 35` frozen average `3.8 pallets/delivery`.
+    - Suggested policy:
+      - Move from `4x/week` to `2x/week` per affected temp zone.
+      - Hold minimum service floor: `2x/week` per zone retained.
+    - Expected outcome: pallet density +18% to +24% on those lanes.
+
+15. **Using 3-month history, identify overhang pallet patterns and suggest model improvements.**
+
+    Example answer:
+    - Overhang frequency: `11.6%` of planning days, concentrated in `PRO` and
+      `PER` waves.
+    - Pattern: Friday loads exceed cube-degradation adjusted limits in Montana.
+    - Suggested model changes:
+      - Add pre-build reserve of `8-10%` cube for high-variance stores.
+      - Trigger proactive split when predicted cube utilization exceeds `95%`.
+      - Prefer 53ft single for specific high-variance lanes.
+
+16. **Do any routes with LCV combination >48/28 travel more than 2 miles off interstate?**
+
+    Example answer:
+    - Compliance scan result: `2 violations` detected.
+    - Affected runs:
+      - `Trip-1049` with `45+45`, max off-interstate distance `3.4 mi`.
+      - `Trip-1053` with `40+40`, max off-interstate distance `2.6 mi`.
+    - Action: route corrected to legal alternatives and revalidated.
+
+17. **Do any runs require a driver layover?**
+
+    Example answer:
+    - Runs requiring layover: `Trip-1070`, `Trip-1074`.
+    - Cause: projected duty time exceeds legal same-shift return constraints.
+    - Recommendation: convert one run to relay and resequence one stop cluster.
+
+18. **Would any additional routes benefit from relay vs single-driver leg?**
+
+    Example answer:
+    - Relay candidates: `Trip-1042`, `Trip-1070`.
+    - Benefit:
+      - First retail ETA improves by `35-55 min`.
+      - Trailer dwell time reduced by `1.2h` average.
+    - Cost tradeoff: +relay handling cost, offset by on-time service gain.
+
+19. **Would any routes benefit from straight-leg vs relay?**
+
+    Example answer:
+    - Straight-leg candidates: `Trip-1031`, `Trip-1035`.
+    - Benefit:
+      - Reduced handoff risk.
+      - `-0.6h` average total elapsed time.
+    - Recommendation: retain straight-leg for low-variance local lanes.
+
+20. **Would additional LCV set availability reduce total route expense?**
+
+    Example answer:
+    - Scenario: add one `45+45` set in SLMontana wave.
+    - Impact:
+      - Route count unchanged, but total miles reduced `-3.1%`.
+      - Estimated daily cost reduction: `2.4%`.
+    - Highest benefit window: Mon/Fri produce peaks.
+
+21. **Snow event in region XXX: re-optimize XXX commodity using only single 53ft trailers until tomorrow. Show cost impact and revised plan.**
+
+    Example answer:
+    - Scenario constraint: region `XXX`, commodity `XXX`, trailer type locked to
+      `53ft single` for next planning day.
+    - Result:
+      - `+2` routes added.
+      - Total miles `+8.9%`.
+      - No state-restriction violations.
+    - Output includes revised trip list, ETAs, and incremental cost report.
+
+### 17.2 Implementation Notes for MCP
+
+- Questions 1-12 and 16-21 are supported directly from current containers plus
+  optimization and validation flows.
+- Questions 13-15 require historical analytics over at least 3 months of
+  `route_history` and/or retained order snapshots.
+- Recommended extension tools for production operations:
+  - `compare_sessions`
+  - `simulate_constraint_change`
+  - `simulate_delay_impact`
+  - `analyze_overhang_patterns`
+  - `recommend_delivery_windows`
+  - `analyze_relay_candidates`
 
 ---
 

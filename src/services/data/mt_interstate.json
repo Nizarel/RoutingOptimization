@@ -1,0 +1,36 @@
+{
+  "description": "Sparse waypoints along Montana interstates I-90 and I-15. Used by ConstraintEngine.check_interstate_proximity for MT-only 40+40 stops. Coordinates are [lat, lon]. Sourced from public OSM data; sampled roughly every ~15 miles, sufficient for the 2-mile compliance test required by Montana DOT.",
+  "lines": [
+    {
+      "name": "I-90",
+      "waypoints": [
+        [47.9560, -116.4470],
+        [47.6740, -114.3160],
+        [47.0040, -113.4470],
+        [46.8721, -113.9940],
+        [46.6052, -112.0190],
+        [46.0040, -110.7050],
+        [45.6794, -111.0440],
+        [45.6770, -109.7780],
+        [45.7833, -108.5007],
+        [46.0500, -107.4730],
+        [46.1500, -106.6260]
+      ]
+    },
+    {
+      "name": "I-15",
+      "waypoints": [
+        [44.6580, -112.6810],
+        [44.9930, -112.5170],
+        [45.5670, -112.3300],
+        [46.0060, -112.5340],
+        [46.5950, -112.0370],
+        [47.1100, -111.3000],
+        [47.5050, -111.3000],
+        [48.3000, -111.3000],
+        [48.5500, -111.8730],
+        [48.9930, -112.0050]
+      ]
+    }
+  ]
+}

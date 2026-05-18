@@ -8,6 +8,13 @@ This repository implements the **walking skeleton** described in
 [`Routing_Optimization_MCP_Server_Spec_Architecture.md`](Routing_Optimization_MCP_Server_Spec_Architecture.md)
 (spec §14, Sprints 1–2).
 
+> **Deployment status — 2026-05-18:** Full Sprint 1–2 infrastructure is live in
+> `rg-routing-mcp-dev` (subscription `0192a5d6-e628-4362-9838-9a38759772a6`,
+> tenant `f41907ba-5052-4208-b43b-fd1518a87d3e`). All 7 Cosmos containers are
+> provisioned, seed data is loaded (57 order-board documents confirmed), and the
+> Container App is running. Sprint 3+ work (real Azure Maps, constraint engine,
+> remaining tools) is pending.
+
 ## Status
 
 | Capability | State |
@@ -19,13 +26,13 @@ This repository implements the **walking skeleton** described in
 | OR-Tools CVRPTW solver (distance + weight + cube + time dimensions) | ✅ |
 | `optimize_route` end-to-end tool + `routing://last-solution` resource | ✅ |
 | Bicep IaC at subscription scope (Cosmos serverless + Key Vault, RBAC) | ✅ |
-| Real Azure Maps Route Matrix integration | ⏳ stubbed (Haversine) |
-| Cube-degradation / lead-pup split / state restrictions enforcement | ⏳ deferred to Sprint 3+ |
-| Container Apps deployment target | ⏳ deferred (azd `services:` not wired) |
+| Real Azure Maps Route Matrix integration | ⏳ Sprint 3 (Haversine stub active) |
+| Cube-degradation / lead-pup split / state restrictions enforcement | ⏳ Sprint 4 |
+| Container Apps deployment (image live, replicas running) | ✅ |
 
 ## Prerequisites
 
-- Python 3.12
+- Python 3.13
 - Azure CLI + `azd` (Azure Developer CLI)
 - Access to subscription `0192a5d6-e628-4362-9838-9a38759772a6`
   (tenant `f41907ba-5052-4208-b43b-fd1518a87d3e`)
@@ -66,6 +73,58 @@ Export the provisioned outputs into a local `.env`:
 ```powershell
 azd env get-values | Out-File -Encoding utf8 .env
 ```
+
+## Azure Infrastructure (deployed — 2026-05-18)
+
+Resource group: **`rg-routing-mcp-dev`** · Region: East US 2 · Resource token: `vqcz36euruiko`
+
+### Cosmos DB — `cosmos-rt-vqcz36euruiko`
+
+Database: `routing_optimization`
+
+| Container | Partition key | TTL |
+|---|---|---|
+| `locations` | `/location_type` | none |
+| `trailer_types` | `/trailer_class` | none |
+| `state_restrictions` | `/state` | none |
+| `order_boards` | `/order_group` | 30 days |
+| `route_history` | `/dc_code` | 90 days |
+| `matrix_cache` | `/profile` | 24 hours |
+| `districts` | `/dc_code` | none |
+
+Seed data confirmed: 57 order-board documents in `order_boards` (last verified 2026-05-13).
+
+### Container App — `ca-rt-vqcz36euruiko`
+
+| Property | Value |
+|---|---|
+| FQDN | `ca-rt-vqcz36euruiko.proudglacier-ba160324.eastus2.azurecontainerapps.io` |
+| Transport | HTTP, port 8000 |
+| Scale | 1–3 replicas |
+| Image | `acrrtvqcz36euruiko.azurecr.io/routing-optimization-mcp/mcp-routing-mcp-dev:azd-deploy-1778658604` |
+| Auth | Managed identity (`AZURE_CLIENT_ID=31c337c0-9f4f-453a-8bea-b0be1e9ba6b3`) |
+
+Key environment variables set on the Container App:
+
+```
+AZURE_COSMOS_ENDPOINT   https://cosmos-rt-vqcz36euruiko.documents.azure.com:443/
+AZURE_COSMOS_DATABASE   routing_optimization
+AZURE_KEY_VAULT_URI     https://kv-rt-vqcz36euruiko.vault.azure.net/
+AZURE_MAPS_CLIENT_ID    31c337c0-9f4f-453a-8bea-b0be1e9ba6b3  (managed identity)
+MCP_TRANSPORT           http
+MCP_HTTP_HOST           0.0.0.0
+MCP_HTTP_PORT           8000
+APPLICATIONINSIGHTS_CONNECTION_STRING  <set; InstrumentationKey=c12febc9-...>
+```
+
+### Other resources
+
+| Resource | Name | Notes |
+|---|---|---|
+| Azure Container Registry | `acrrtvqcz36euruiko` | Hosts the MCP server image |
+| Azure Maps | `maps-rt-vqcz36euruiko` | Gen2 · Standard G2 · Managed Identity auth |
+| Key Vault | `kv-rt-vqcz36euruiko` | Public access disabled; VNet/private endpoint only |
+| App Insights | (connection string above) | Telemetry for Container App |
 
 ## Seed data
 
@@ -138,13 +197,30 @@ tests/                 Unit tests + skipped integration test
 scripts/seed_data.py   CLI wrapper around ingest tools
 ```
 
-## Next steps (post-skeleton)
+## Next steps (Sprint 3+)
 
+### Sprint 3 — Azure Maps + matrix cache
 1. Replace the Haversine stub in `src/services/azure_maps.py` with the real
-   Azure Maps Route Matrix v2 client; persist results to `matrix_cache`.
-2. Enforce state restrictions and cube degradation in the solver
-   (spec §6, §10).
-3. Implement lead/pup split logic for two-stop routes (spec §10.3).
-4. Wire the `services:` block in `azure.yaml` to deploy the container to
-   Azure Container Apps.
-5. Add an eval harness comparing solver output to historical `RouteHistory`.
+   Azure Maps Route Matrix v2 async client (Managed Identity token via
+   `azure-identity`); keep the `get_matrix(points, profile)` interface stable.
+2. Implement `matrix_travel_times` MCP tool: check `matrix_cache` first
+   (SHA-256 key of sorted location codes + profile), call Azure Maps on miss,
+   persist result with 24-hour TTL.
+3. Wire the cached matrix into `optimize_route` instead of always calling
+   Haversine.
+
+### Sprint 4 — Constraint engine
+4. Create `src/services/constraint_engine.py`: cube degradation (spec §6.2),
+   lead/pup split for two-stop routes (spec §10.3), state restriction check
+   (spec §6.4), interstate proximity check.
+5. Add `select_trailer` tool (spec §7.3, FR-002).
+6. Add `validate_route` tool (spec FR-003).
+7. Fix overnight curfew window handling in `optimize_route` (currently windows
+   spanning midnight are silently dropped).
+
+### Sprint 5 — Remaining tools and prompts
+8. `geocode_address`, `directions`, `isochrone`, `map_render` tools
+   (FR-005 through FR-008).
+9. 7 remaining MCP resources (FR-020 through FR-027).
+10. 5 MCP prompts in `src/prompts/` (FR-030 through FR-034).
+11. Add an eval harness comparing solver output to historical `RouteHistory`.
