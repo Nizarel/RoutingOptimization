@@ -173,3 +173,25 @@ async def test_matrix_travel_times_cache_hit(_fake_locations):
     assert resp.from_cache is True
     mock_get_matrix.assert_not_awaited()
     assert resp.location_codes == sorted(codes)
+
+
+# ── Cache-key invalidation across vehicle_spec ──────────────────────────────
+
+def test_cache_key_invariant_when_spec_is_none():
+    """Key with ``vehicle_fingerprint=None`` must equal the legacy codes-only key."""
+    from src.data.matrix_repo import MatrixCacheRepo
+
+    codes = ["A", "B", "C"]
+    assert MatrixCacheRepo.make_key(codes) == MatrixCacheRepo.make_key(codes, None)
+    assert MatrixCacheRepo.make_key(codes, {}) == MatrixCacheRepo.make_key(codes)
+
+
+def test_cache_key_differs_for_different_vehicle_specs():
+    from src.data.matrix_repo import MatrixCacheRepo
+    from src.services.azure_maps import VehicleSpec
+
+    codes = ["A", "B", "C"]
+    fp_a = VehicleSpec(weight_kg=18000).cache_fingerprint()
+    fp_b = VehicleSpec(weight_kg=25000).cache_fingerprint()
+    assert MatrixCacheRepo.make_key(codes, fp_a) != MatrixCacheRepo.make_key(codes, fp_b)
+    assert MatrixCacheRepo.make_key(codes, fp_a) != MatrixCacheRepo.make_key(codes)

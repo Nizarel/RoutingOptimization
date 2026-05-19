@@ -70,8 +70,7 @@ class BaseRepository(Generic[TModel]):
         kwargs: dict[str, Any] = {"query": query, "parameters": parameters or []}
         if partition_key is not None:
             kwargs["partition_key"] = partition_key
-        else:
-            kwargs["enable_cross_partition_query"] = True
+        # enable_cross_partition_query removed in azure-cosmos >=4.7; it is now the default
 
         results: list[TModel] = []
         async for doc in container.query_items(**kwargs):
@@ -85,8 +84,7 @@ class BaseRepository(Generic[TModel]):
         kwargs: dict[str, Any] = {"query": "SELECT VALUE COUNT(1) FROM c"}
         if partition_key is not None:
             kwargs["partition_key"] = partition_key
-        else:
-            kwargs["enable_cross_partition_query"] = True
+        # enable_cross_partition_query removed in azure-cosmos >=4.7; it is now the default
         async for v in container.query_items(**kwargs):
             return int(v)
         return 0

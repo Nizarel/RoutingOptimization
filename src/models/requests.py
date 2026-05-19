@@ -82,10 +82,28 @@ class GetRestrictionsResponse(BaseModel):
 
 # --- matrix_travel_times ---
 
+class VehicleSpecModel(BaseModel):
+    """Optional truck dimensions/weight forwarded to Azure Maps Route Matrix v2.
+
+    Units are SI: kg, meters, km/h. All fields optional.
+    """
+
+    weight_kg: float | None = None
+    axle_weight_kg: float | None = None
+    length_m: float | None = None
+    width_m: float | None = None
+    height_m: float | None = None
+    max_speed_kmh: float | None = None
+    is_commercial: bool = True
+    load_type: list[str] = Field(default_factory=list)
+    adr_tunnel_restriction_code: str | None = None
+
+
 class MatrixTravelTimesRequest(BaseModel):
     location_codes: list[str] = Field(..., min_length=2)
     profile: str = "truck"
     use_cache: bool = True
+    vehicle_spec: VehicleSpecModel | None = None
 
 
 class MatrixTravelTimesResponse(BaseModel):

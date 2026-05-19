@@ -9,7 +9,12 @@ from src.logging_config import get_logger
 from src.models.matrix import MatrixCacheEntry
 from src.models.requests import MatrixTravelTimesRequest, MatrixTravelTimesResponse
 from src.server import mcp
-from src.services.azure_maps import get_matrix, matrix_from_cache, to_sorted_cache_entry
+from src.services.azure_maps import (
+    VehicleSpec,
+    get_matrix,
+    matrix_from_cache,
+    to_sorted_cache_entry,
+)
 
 log = get_logger(__name__)
 
@@ -30,9 +35,16 @@ async def matrix_travel_times(req: MatrixTravelTimesRequest) -> MatrixTravelTime
     sorted_codes = sorted(req.location_codes)
     cache_repo = MatrixCacheRepo()
 
-    # ── Cache lookup ────────────────────────────────────────────────────────
+    vehicle_spec: VehicleSpec | None = None
+    fingerprint: dict | None = None
+    if req.vehicle_spec is not None:
+        vehicle_spec = VehicleSpec(**req.vehicle_spec.model_dump())
+        fp = vehicle_spec.cache_fingerprint()
+        fingerprint = fp or None
+
+    # ── Cache lookup ────────────────────────────────────────────────────────────────────────
     if req.use_cache:
-        hit = await cache_repo.get_cached(sorted_codes, req.profile)
+        hit = await cache_repo.get_cached(sorted_codes, req.profile, fingerprint)
         if hit is not None:
             log.info("matrix_travel_times.cache_hit", n=len(sorted_codes), profile=req.profile)
             return MatrixTravelTimesResponse(
@@ -55,12 +67,12 @@ async def matrix_travel_times(req: MatrixTravelTimesRequest) -> MatrixTravelTime
 
     # ── Fetch from Azure Maps (or Haversine fallback) ───────────────────────
     log.info("matrix_travel_times.fetch", n=len(sorted_codes), profile=req.profile)
-    matrix = await get_matrix(points, profile=req.profile)
+    matrix = await get_matrix(points, profile=req.profile, vehicle_spec=vehicle_spec)
 
-    # ── Persist to cache ────────────────────────────────────────────────────
+    # ── Persist to cache ─────────────────────────────────────────────────────────────────────────
     sorted_data = to_sorted_cache_entry(matrix, req.profile)
     entry = MatrixCacheEntry(
-        id=MatrixCacheRepo.make_key(sorted_codes),
+        id=MatrixCacheRepo.make_key(sorted_codes, fingerprint),
         profile=req.profile,
         location_codes=sorted_data["sorted_codes"],
         location_count=len(sorted_codes),

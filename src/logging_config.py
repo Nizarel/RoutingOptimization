@@ -17,6 +17,19 @@ def configure_logging(level: str = "INFO") -> None:
         level=log_level,
     )
 
+    # Silence verbose Azure SDK HTTP logging — it floods stdout with request/
+    # response dumps and crowds out our own structured logs. WARNING preserves
+    # auth failures and throttling notices.
+    for noisy in (
+        "azure",
+        "azure.core.pipeline.policies.http_logging_policy",
+        "azure.identity",
+        "azure.monitor",
+        "urllib3",
+        "uvicorn.access",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

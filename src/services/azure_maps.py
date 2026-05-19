@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import math
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, date, datetime
 
 import httpx
 from azure.identity.aio import DefaultAzureCredential
@@ -34,13 +34,38 @@ log = get_logger(__name__)
 # ── Haversine fallback ────────────────────────────────────────────────────────
 _AVG_TRUCK_SPEED_MPS = 45 * 1609.344 / 3600  # ~20.1 m/s
 
-# ── Azure Maps limits ─────────────────────────────────────────────────────────
-# Sync endpoint supports ≤700 origin×destination cells (origins==destinations
-# for our square matrix, so ≤26×26 = 676).
-_SYNC_CELL_LIMIT = 700
-# Polling config for the async endpoint.
-_ASYNC_POLL_INTERVAL_SEC = 3
-_ASYNC_POLL_TIMEOUT_SEC = 300
+# ── Azure Maps Route Matrix v2 ───────────────────────────────────────────────
+_ROUTE_MATRIX_API_VERSION = "2025-01-01"
+# v2 sync supports up to 2500 cells; runtime guard comes from settings.
+_MATRIX_V2_HARD_LIMIT = 2500
+
+# ── Daily budget tracker (per-replica, in-memory) ─────────────────────────────
+_BUDGET_LOCK = asyncio.Lock()
+_BUDGET_STATE: dict[str, int | date | bool] = {
+    "date": date.today(),
+    "cells": 0,
+    "warned": False,
+}
+
+# ── OTel meter (lazy) ─────────────────────────────────────────────────────────
+_CELLS_COUNTER = None
+
+
+def _cells_counter():
+    global _CELLS_COUNTER
+    if _CELLS_COUNTER is None:
+        try:
+            from opentelemetry import metrics
+
+            meter = metrics.get_meter("src.services.azure_maps")
+            _CELLS_COUNTER = meter.create_counter(
+                "azure_maps_cells_total",
+                unit="cell",
+                description="Cumulative Azure Maps Route Matrix cells requested",
+            )
+        except Exception:  # noqa: BLE001
+            _CELLS_COUNTER = False  # disable on failure
+    return _CELLS_COUNTER or None
 
 
 # ── Public dataclass ──────────────────────────────────────────────────────────
@@ -52,6 +77,51 @@ class Matrix:
     location_codes: list[str]
     distance_m: list[list[float]]
     time_sec: list[list[float]]
+
+
+@dataclass(slots=True)
+class VehicleSpec:
+    """Truck dimensions/weight passed to Azure Maps Route Matrix v2.
+
+    Units: SI (kg, meters, km/h). All fields optional; only non-None values are
+    serialized into the ``vehicleSpec`` block of the request.
+    """
+
+    weight_kg: float | None = None
+    axle_weight_kg: float | None = None
+    length_m: float | None = None
+    width_m: float | None = None
+    height_m: float | None = None
+    max_speed_kmh: float | None = None
+    is_commercial: bool = True
+    load_type: list[str] = field(default_factory=list)
+    adr_tunnel_restriction_code: str | None = None
+
+    def to_payload(self) -> dict:
+        """Render as the ``vehicleSpec`` block. Camel-case keys per REST spec."""
+        d: dict = {}
+        if self.weight_kg is not None:
+            d["weight"] = round(self.weight_kg)
+        if self.axle_weight_kg is not None:
+            d["axleWeight"] = round(self.axle_weight_kg)
+        if self.length_m is not None:
+            d["length"] = round(self.length_m, 2)
+        if self.width_m is not None:
+            d["width"] = round(self.width_m, 2)
+        if self.height_m is not None:
+            d["height"] = round(self.height_m, 2)
+        if self.max_speed_kmh is not None:
+            d["maxSpeed"] = round(self.max_speed_kmh)
+        d["isVehicleCommercial"] = self.is_commercial
+        if self.load_type:
+            d["loadType"] = list(self.load_type)
+        if self.adr_tunnel_restriction_code:
+            d["adrTunnelRestrictionCode"] = self.adr_tunnel_restriction_code
+        return d
+
+    def cache_fingerprint(self) -> dict:
+        """Stable dict used to derive a cache-key suffix."""
+        return {k: v for k, v in asdict(self).items() if v not in (None, [], False)}
 
 
 # ── Haversine helpers ─────────────────────────────────────────────────────────
@@ -119,25 +189,64 @@ def matrix_from_cache(entry: "MatrixCacheEntryLike", points: list[tuple[str, flo
     )
 
 
-# ── Azure Maps HTTP helpers ───────────────────────────────────────────────────
+# ── Azure Maps HTTP helpers (Route Matrix v2) ────────────────────────────────
 
-def _build_request_body(points: list[tuple[str, float, float]]) -> dict:
+def _build_v2_body(
+    points: list[tuple[str, float, float]],
+    profile: str,
+    vehicle_spec: "VehicleSpec | None",
+) -> dict:
+    """Build the GeoJSON FeatureCollection body for Route Matrix v2.
+
+    Two Features, both MultiPoint of all ``points`` (square NxN matrix), with
+    ``properties.pointType`` set to ``origins`` and ``destinations``.
+    """
     coords = [[lon, lat] for _, lat, lon in points]
-    return {
-        "origins": {"type": "MultiPoint", "coordinates": coords},
-        "destinations": {"type": "MultiPoint", "coordinates": coords},
+    multipoint = {"type": "MultiPoint", "coordinates": coords}
+    body: dict = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": multipoint, "properties": {"pointType": "origins"}},
+            {"type": "Feature", "geometry": multipoint, "properties": {"pointType": "destinations"}},
+        ],
+        "travelMode": profile,
+        "routeOutputOptions": ["routeSummary"],
+        "optimizeRoute": "fastestWithoutTraffic",
+        "traffic": "historical",
     }
+    if vehicle_spec is not None:
+        payload = vehicle_spec.to_payload()
+        if payload:
+            body["vehicleSpec"] = payload
+    return body
 
 
-def _parse_response(data: dict, points: list[tuple[str, float, float]]) -> Matrix:
+def _parse_v2_response(data: dict, points: list[tuple[str, float, float]]) -> Matrix:
     n = len(points)
     dist = [[0.0] * n for _ in range(n)]
     time = [[0.0] * n for _ in range(n)]
-    for i, row in enumerate(data["matrix"]):
-        for j, cell in enumerate(row):
-            summary = cell.get("response", {}).get("routeSummary", {})
-            dist[i][j] = float(summary.get("lengthInMeters", 0))
-            time[i][j] = float(summary.get("travelTimeInSeconds", 0))
+    haversine = _haversine_matrix(points)
+    cells = (
+        data.get("properties", {}).get("matrix")
+        or data.get("matrix")  # tolerant of either shape
+        or []
+    )
+    for cell in cells:
+        i = int(cell.get("originIndex", -1))
+        j = int(cell.get("destinationIndex", -1))
+        if not (0 <= i < n and 0 <= j < n):
+            continue
+        status = int(cell.get("statusCode", 200))
+        if status != 200:
+            dist[i][j] = haversine.distance_m[i][j]
+            time[i][j] = haversine.time_sec[i][j]
+            continue
+        dist[i][j] = float(cell.get("distanceInMeters", 0) or 0)
+        time[i][j] = float(
+            cell.get("durationTrafficInSeconds")
+            or cell.get("durationInSeconds")
+            or 0
+        )
     return Matrix(
         location_codes=[code for code, _, _ in points],
         distance_m=dist,
@@ -151,73 +260,59 @@ async def _get_token(settings) -> str:  # type: ignore[no-untyped-def]
         return token_obj.token
 
 
-async def _fetch_sync(
+async def _check_and_charge_budget(cells: int, daily_budget: int | None) -> None:
+    """Roll the daily counter and enforce the budget. Raises ``RuntimeError`` over budget."""
+    if daily_budget is None:
+        return
+    today = date.today()
+    async with _BUDGET_LOCK:
+        if _BUDGET_STATE["date"] != today:
+            _BUDGET_STATE["date"] = today
+            _BUDGET_STATE["cells"] = 0
+            _BUDGET_STATE["warned"] = False
+        current = int(_BUDGET_STATE["cells"])  # type: ignore[arg-type]
+        if current + cells > daily_budget:
+            log.error(
+                "azure_maps.matrix_budget_exceeded",
+                requested=cells, used=current, budget=daily_budget,
+            )
+            raise RuntimeError(
+                f"Azure Maps daily cell budget exceeded ({current}+{cells} > {daily_budget})"
+            )
+        _BUDGET_STATE["cells"] = current + cells
+        if (
+            not _BUDGET_STATE["warned"]
+            and (current + cells) >= int(0.8 * daily_budget)
+        ):
+            _BUDGET_STATE["warned"] = True
+            log.warning(
+                "azure_maps.matrix_budget_warn_80pct",
+                used=current + cells, budget=daily_budget,
+            )
+
+
+async def _fetch_v2_sync(
     client: httpx.AsyncClient,
     token: str,
     client_id: str,
     base_url: str,
     points: list[tuple[str, float, float]],
     profile: str,
+    vehicle_spec: "VehicleSpec | None",
 ) -> Matrix:
     resp = await client.post(
-        f"{base_url}/route/matrix/sync/json",
-        params={"api-version": "1.0", "travelMode": profile, "routeType": "fastest"},
+        f"{base_url}/route/matrix",
+        params={"api-version": _ROUTE_MATRIX_API_VERSION},
         headers={
             "Authorization": f"Bearer {token}",
             "x-ms-client-id": client_id,
             "Content-Type": "application/json",
         },
-        json=_build_request_body(points),
-        timeout=60.0,
+        json=_build_v2_body(points, profile, vehicle_spec),
+        timeout=90.0,
     )
     resp.raise_for_status()
-    return _parse_response(resp.json(), points)
-
-
-async def _fetch_async(
-    client: httpx.AsyncClient,
-    token: str,
-    client_id: str,
-    base_url: str,
-    points: list[tuple[str, float, float]],
-    profile: str,
-) -> Matrix:
-    resp = await client.post(
-        f"{base_url}/route/matrix/json",
-        params={"api-version": "1.0", "travelMode": profile, "routeType": "fastest"},
-        headers={
-            "Authorization": f"Bearer {token}",
-            "x-ms-client-id": client_id,
-            "Content-Type": "application/json",
-        },
-        json=_build_request_body(points),
-        timeout=30.0,
-    )
-    if resp.status_code == 200:
-        return _parse_response(resp.json(), points)
-    if resp.status_code != 202:
-        resp.raise_for_status()
-
-    poll_url = resp.headers.get("Location")
-    if not poll_url:
-        raise RuntimeError("Azure Maps async matrix: missing Location header in 202 response")
-
-    log.info("azure_maps.matrix_async_submitted", poll_url=poll_url)
-    elapsed = 0
-    while elapsed < _ASYNC_POLL_TIMEOUT_SEC:
-        await asyncio.sleep(_ASYNC_POLL_INTERVAL_SEC)
-        elapsed += _ASYNC_POLL_INTERVAL_SEC
-        poll_resp = await client.get(
-            poll_url,
-            headers={"Authorization": f"Bearer {token}", "x-ms-client-id": client_id},
-            timeout=30.0,
-        )
-        if poll_resp.status_code == 200:
-            return _parse_response(poll_resp.json(), points)
-        if poll_resp.status_code != 202:
-            poll_resp.raise_for_status()
-
-    raise TimeoutError(f"Azure Maps async matrix did not complete within {_ASYNC_POLL_TIMEOUT_SEC}s")
+    return _parse_v2_response(resp.json(), points)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -225,33 +320,65 @@ async def _fetch_async(
 async def get_matrix(
     points: list[tuple[str, float, float]],
     profile: str = "truck",
+    *,
+    vehicle_spec: "VehicleSpec | None" = None,
 ) -> Matrix:
     """Return an NxN travel-time/distance matrix for ``points = [(code, lat, lon), ...]``.
 
-    Calls the Azure Maps Route Matrix v1 API when ``azure_maps_client_id`` is
-    set; falls back to Haversine otherwise.
+    Calls the Azure Maps Route Matrix v2 API (api-version=2025-01-01) when
+    ``azure_maps_client_id`` is set; falls back to Haversine otherwise.
     """
     settings = get_settings()
     client_id = settings.azure_maps_client_id
-
-    if not client_id:
-        log.info("azure_maps.haversine_fallback", reason="client_id_not_set", n=len(points))
-        return _haversine_matrix(points)
-
     n = len(points)
     cells = n * n
+
+    if not client_id:
+        log.info("azure_maps.haversine_fallback", reason="client_id_not_set", n=n)
+        return _haversine_matrix(points)
+
+    max_cells = min(settings.azure_maps_matrix_max_cells, _MATRIX_V2_HARD_LIMIT)
+    if cells > max_cells:
+        raise ValueError(
+            f"Matrix request too large: {cells} cells (limit={max_cells}). "
+            f"Chunk the location list and merge results."
+        )
+
+    await _check_and_charge_budget(cells, settings.azure_maps_matrix_daily_budget_cells)
+
+    started = datetime.now(UTC)
+    counter = _cells_counter()
+    if counter is not None:
+        try:
+            counter.add(cells, {"profile": profile, "weighted": vehicle_spec is not None})
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         token = await _get_token(settings)
         async with httpx.AsyncClient() as client:
-            if cells <= _SYNC_CELL_LIMIT:
-                log.info("azure_maps.matrix_sync", n=n, cells=cells, profile=profile)
-                return await _fetch_sync(client, token, client_id, settings.azure_maps_base_url, points, profile)
-            else:
-                log.info("azure_maps.matrix_async", n=n, cells=cells, profile=profile)
-                return await _fetch_async(client, token, client_id, settings.azure_maps_base_url, points, profile)
+            log.info(
+                "azure_maps.matrix_sync_v2",
+                n=n, cells=cells, profile=profile,
+                weighted=vehicle_spec is not None,
+            )
+            result = await _fetch_v2_sync(
+                client, token, client_id, settings.azure_maps_base_url,
+                points, profile, vehicle_spec,
+            )
+            latency_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+            log.info(
+                "azure_maps.matrix_call",
+                n=n, cells=cells, latency_ms=latency_ms,
+                status="ok", weighted=vehicle_spec is not None,
+            )
+            return result
     except Exception as exc:  # noqa: BLE001
-        log.warning("azure_maps.matrix_failed_fallback", error=str(exc), n=n)
+        latency_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+        log.warning(
+            "azure_maps.matrix_failed_fallback",
+            error=str(exc), n=n, cells=cells, latency_ms=latency_ms,
+        )
         return _haversine_matrix(points)
 
 

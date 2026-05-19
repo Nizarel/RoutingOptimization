@@ -27,7 +27,12 @@ from src.models.route import (
 )
 from src.models.trailer import TrailerType
 from src.server import mcp
-from src.services.azure_maps import get_matrix, matrix_from_cache, to_sorted_cache_entry
+from src.services.azure_maps import (
+    VehicleSpec,
+    get_matrix,
+    matrix_from_cache,
+    to_sorted_cache_entry,
+)
 from src.services.constraint_engine import ConstraintEngine
 from src.services.curfew import primary_window
 from src.services.solver import (
@@ -259,7 +264,18 @@ async def optimize_route(req: OptimizeRouteRequest) -> OptimizeRouteResponse:
     cache_repo = MatrixCacheRepo()
     matrix = None
 
-    cache_entry = await cache_repo.get_cached(sorted_codes, req.profile)
+    # Build a VehicleSpec from the selected trailer so Azure Maps routes around
+    # roads the truck cannot use. Trailer dimensions are not in the Cosmos schema
+    # yet (Sprint 8 placeholder) — we forward weight only, which already
+    # influences truck routing without committing to specific dims.
+    _LBS_TO_KG = 0.45359237
+    vehicle_spec = VehicleSpec(
+        weight_kg=trailer.total_weight_max_lbs * _LBS_TO_KG,
+        is_commercial=True,
+    )
+    fingerprint = vehicle_spec.cache_fingerprint() or None
+
+    cache_entry = await cache_repo.get_cached(sorted_codes, req.profile, fingerprint)
     if cache_entry is not None:
         log.info("optimize_route.matrix_cache_hit", n=len(stops), profile=req.profile)
         matrix = matrix_from_cache(cache_entry, [(s.code, s.lat, s.lon) for s in stops])
@@ -267,11 +283,12 @@ async def optimize_route(req: OptimizeRouteRequest) -> OptimizeRouteResponse:
         matrix = await get_matrix(
             [(s.code, s.lat, s.lon) for s in stops],
             profile=req.profile,
+            vehicle_spec=vehicle_spec,
         )
         # Persist sorted copy to cache (24-hour TTL)
         sorted_data = to_sorted_cache_entry(matrix, req.profile)
         new_entry = MatrixCacheEntry(
-            id=MatrixCacheRepo.make_key(sorted_codes),
+            id=MatrixCacheRepo.make_key(sorted_codes, fingerprint),
             profile=req.profile,
             location_codes=sorted_data["sorted_codes"],
             location_count=len(sorted_codes),

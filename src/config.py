@@ -26,10 +26,16 @@ class Settings(BaseSettings):
     azure_cosmos_endpoint: str = Field(..., description="Cosmos DB account endpoint URL")
     azure_cosmos_database: str = Field(default="routing_optimization")
 
-    # --- Azure Maps (skeleton: unused; Haversine stub) ---
+    # --- Azure Maps (live when ``azure_maps_client_id`` is set; otherwise Haversine) ---
     azure_maps_subscription_key: str | None = None
     azure_maps_client_id: str | None = None
     azure_maps_base_url: str = "https://atlas.microsoft.com"
+    # Route Matrix v2 (api-version=2025-01-01) supports up to 2500 cells in sync mode.
+    # We keep a tighter default safety guard; raise via env if needed.
+    azure_maps_matrix_max_cells: int = 700
+    # Soft per-replica daily cell budget. None disables. Logs WARNING at 80%, ERROR
+    # and refuses the call at 100%.
+    azure_maps_matrix_daily_budget_cells: int | None = None
 
     # --- Observability ---
     application_insights_connection_string: str | None = None
