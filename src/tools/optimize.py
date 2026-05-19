@@ -100,6 +100,62 @@ def _states_traversed(
     return seen
 
 
+def _preflight_infeasibility(
+    stops: list[StopInput],
+    vehicles: list[VehicleInput],
+    matrix,
+    *,
+    depot_index: int = 0,
+) -> list[str]:
+    """Detect blockers that guarantee solver infeasibility, before calling OR-Tools.
+
+    Returns a list of human-readable notes when blockers are found, else ``[]``.
+    Checks:
+      * Per-stop round-trip exceeds the vehicle ``max_route_seconds`` cap.
+      * Aggregate demand (weight or cubes) exceeds total fleet capacity.
+
+    These are the most common reasons OR-Tools returns ``infeasible`` after
+    burning the full ``max_solver_seconds`` budget on a doomed search.
+    """
+    notes: list[str] = []
+    if not vehicles or not stops:
+        return notes
+
+    # Use the most generous vehicle time/capacity as the upper bound — if a stop
+    # cannot fit even the largest vehicle, no vehicle can serve it.
+    max_route_sec = max(v.max_route_seconds for v in vehicles)
+
+    for idx, stop in enumerate(stops):
+        if idx == depot_index:
+            continue
+        out_sec = matrix.time_sec[depot_index][idx]
+        back_sec = matrix.time_sec[idx][depot_index]
+        rt_sec = out_sec + back_sec + stop.service_sec
+        if rt_sec > max_route_sec:
+            notes.append(
+                f"stop={stop.code} round-trip {rt_sec / 3600:.1f}h exceeds "
+                f"vehicle max {max_route_sec / 3600:.1f}h"
+            )
+
+    total_weight = sum(s.weight_lbs for s in stops)
+    fleet_weight = sum(v.weight_capacity_lbs for v in vehicles)
+    if total_weight > fleet_weight:
+        notes.append(
+            f"total weight {total_weight} lbs exceeds fleet capacity "
+            f"{fleet_weight} lbs ({len(vehicles)} vehicles)"
+        )
+
+    total_cubes = sum(s.cubes for s in stops)
+    fleet_cubes = sum(v.cube_capacity for v in vehicles)
+    if total_cubes > fleet_cubes:
+        notes.append(
+            f"total cubes {total_cubes} exceeds fleet cube capacity "
+            f"{fleet_cubes} ({len(vehicles)} vehicles)"
+        )
+
+    return notes
+
+
 def _solver_to_result(
     solution: SolverSolution,
     stops: list[StopInput],
@@ -226,6 +282,7 @@ async def optimize_route(req: OptimizeRouteRequest) -> OptimizeRouteResponse:
                         state_violations=[
                             f"trailer={req.trailer_type} not allowed in states={states_in_route}"
                         ],
+                        suggested_trailers=sorted(allowed),
                         evaluated_at=datetime.now(UTC),
                     ),
                 )
@@ -308,7 +365,46 @@ async def optimize_route(req: OptimizeRouteRequest) -> OptimizeRouteResponse:
         for i in range(req.num_vehicles)
     ]
 
+    # ── Pre-flight infeasibility check (avoid wasting solver budget) ────────
+    preflight_notes = _preflight_infeasibility(stops, vehicles, matrix, depot_index=0)
+    if preflight_notes:
+        log.info("optimize_route.preflight_infeasible", notes=preflight_notes)
+        infeasible = RouteResult(
+            status="infeasible",
+            trailer_type=req.trailer_type,
+            routes=[],
+            summary=RouteSummary(total_distance_m=0.0, vehicles_used=0),
+            compliance=ComplianceReport(
+                status="evaluated",
+                notes=preflight_notes,
+                evaluated_at=datetime.now(UTC),
+            ),
+        )
+        history = RouteHistory(
+            id=str(uuid.uuid4()),
+            dc_code=req.dc_code or settings.default_dc_code,
+            order_group=req.order_group,
+            created_at=datetime.now(UTC),
+            request=RouteRequestSnapshot(
+                depot=Depot(lat=depot.lat, lon=depot.lon),
+                district=req.district,
+                stops=req.stops,
+                trailer_type=req.trailer_type,
+                profile=req.profile,
+                objective=req.objective,
+            ),
+            result=infeasible,
+            solver_time_sec=0.0,
+        )
+        await RouteRepo().upsert(history)
+        return OptimizeRouteResponse(history_id=history.id, result=infeasible)
+
+    # ── Adaptive solver budget ──────────────────────────────────────────────
+    # OR-Tools spends the full ``max_solver_seconds`` budget searching before
+    # reporting infeasible. Probe with a short budget first; only escalate to
+    # the full budget when the probe finds a feasible solution.
     started = time.perf_counter()
+    probe_budget = min(5, req.max_solver_seconds)
     solution: SolverSolution = await asyncio.to_thread(
         solve_cvrptw_with_degradation,
         stops,
@@ -316,8 +412,22 @@ async def optimize_route(req: OptimizeRouteRequest) -> OptimizeRouteResponse:
         matrix,
         cube_by_stops=trailer.cube_by_stops,
         depot_index=0,
-        max_solver_seconds=req.max_solver_seconds,
+        max_solver_seconds=probe_budget,
     )
+    if solution.status in {"optimal", "feasible"} and req.max_solver_seconds > probe_budget:
+        # Re-run with full budget for solution quality. Reset vehicle cube caps
+        # because the wrapper mutates them across iterations.
+        for v in vehicles:
+            v.cube_capacity = trailer.cube_by_stops[0]
+        solution = await asyncio.to_thread(
+            solve_cvrptw_with_degradation,
+            stops,
+            vehicles,
+            matrix,
+            cube_by_stops=trailer.cube_by_stops,
+            depot_index=0,
+            max_solver_seconds=req.max_solver_seconds,
+        )
     elapsed = time.perf_counter() - started
 
     result = _solver_to_result(

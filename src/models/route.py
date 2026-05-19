@@ -60,6 +60,13 @@ class ComplianceReport(BaseModel):
     state_violations: list[str] = Field(default_factory=list)
     interstate_violations: list[str] = Field(default_factory=list)
     cube_violations: list[str] = Field(default_factory=list)
+    # Human-readable diagnostics populated by the pre-flight infeasibility
+    # check (e.g. "stop=2106 round-trip 24.3h exceeds vehicle max 24.0h").
+    notes: list[str] = Field(default_factory=list)
+    # Legal trailer IDs intersected across all states in the requested route.
+    # Populated when the state pre-filter rejects the requested trailer so the
+    # caller can pick a legal alternative without a second tool call.
+    suggested_trailers: list[str] = Field(default_factory=list)
     evaluated_at: datetime | None = None
     status: Literal["evaluated", "not_evaluated"] = "not_evaluated"
 
