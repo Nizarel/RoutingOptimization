@@ -6,7 +6,9 @@ Registers all MCP tools and resources, then runs over the configured transport
 from __future__ import annotations
 
 from fastmcp import FastMCP
+from starlette.middleware import Middleware
 
+from src.auth import APIKeyMiddleware
 from src.config import get_settings
 from src.logging_config import configure_logging, get_logger
 from src.telemetry import configure_telemetry
@@ -83,11 +85,15 @@ def main() -> None:
             transport="http",
             host=settings.mcp_http_host,
             port=settings.mcp_http_port,
+            api_key_enforced=settings.mcp_api_key is not None,
         )
         mcp.run(
             transport="http",
             host=settings.mcp_http_host,
             port=settings.mcp_http_port,
+            middleware=[
+                Middleware(APIKeyMiddleware, api_key=settings.mcp_api_key),
+            ],
         )
 
 

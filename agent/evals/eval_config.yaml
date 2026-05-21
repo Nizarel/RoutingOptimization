@@ -1,0 +1,35 @@
+# Batch eval config for the routing-planner agent.
+# Reads dataset.jsonl, posts each query to the deployed agent /chat endpoint,
+# scores results with tool_correctness (custom) + GroundednessEvaluator (built-in).
+
+agent:
+  # Override via AGENT_URL env var when running.
+  chat_url: https://ca-agent-rt-vqcz36euruiko.proudglacier-ba160324.eastus2.azurecontainerapps.io/chat
+  request_timeout_sec: 240
+
+dataset:
+  path: agent/evals/dataset.jsonl
+
+judge:
+  # Foundry/OpenAI deployment used as the LLM judge for GroundednessEvaluator.
+  # Falls back to env vars AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_DEPLOYMENT / AZURE_OPENAI_API_VERSION.
+  azure_endpoint: https://aif-rt-vqcz36euruiko.openai.azure.com/
+  azure_deployment: gpt-4.1
+  api_version: "2024-10-21"
+
+evaluators:
+  - name: tool_correctness
+    kind: custom
+    module: agent.evals.evaluators.tool_correctness
+    function: score_row
+  - name: groundedness
+    kind: builtin
+    class: azure.ai.evaluation.GroundednessEvaluator
+
+thresholds:
+  tool_correctness_min_pass: 0.5   # row passes when score >= this
+  tool_correctness_overall_min_pass_rate: 0.78  # 7/9
+  groundedness_min_avg: 4.0        # GroundednessEvaluator returns 1-5
+
+output:
+  results_dir: .foundry/results

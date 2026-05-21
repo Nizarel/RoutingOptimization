@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     mcp_http_host: str = "0.0.0.0"
     mcp_http_port: int = 8000
     mcp_log_level: str = "INFO"
+    # Shared secret enforced by ``APIKeyMiddleware`` on the HTTP transport.
+    # When ``None`` the middleware is a no-op (local dev / unit tests).
+    mcp_api_key: str | None = None
 
     # --- Routing defaults ---
     default_routing_profile: str = "truck"

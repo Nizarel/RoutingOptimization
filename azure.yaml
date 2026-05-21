@@ -17,3 +17,11 @@ services:
       path: ./Dockerfile
       context: .
       remoteBuild: true
+  agent:
+    project: .
+    host: containerapp
+    language: python
+    docker:
+      path: ./agent/Dockerfile
+      context: .
+      remoteBuild: true

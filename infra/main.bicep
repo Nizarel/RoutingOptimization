@@ -20,6 +20,10 @@ param principalType string = 'User'
 @description('Set to "true" to expose the Container App on a public FQDN. Default "false" (VNet-internal only).')
 param externalIngress string = 'false'
 
+@secure()
+@description('Shared secret enforced by the MCP HTTP API. When empty, no auth is enforced (local dev only).')
+param mcpApiKey string = ''
+
 var tags = {
   'azd-env-name': environmentName
 }
@@ -113,6 +117,7 @@ module kv 'modules/keyvault.bicep' = {
     principalId: principalId
     principalType: principalType
     appPrincipalId: identity.outputs.principalId
+    mcpApiKey: mcpApiKey
   }
 }
 
@@ -136,6 +141,60 @@ module containerapp 'modules/containerapp.bicep' = {
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     externalIngress: externalIngressBool
     azdServiceName: 'mcp'
+    mcpApiKeySecretUri: kv.outputs.mcpApiKeySecretUri
+  }
+}
+
+module foundry 'modules/foundry.bicep' = {
+  name: 'foundry'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    accountName: 'aif-rt-${resourceToken}'
+    customSubDomain: 'aif-rt-${resourceToken}'
+    projectName: 'routing-planner'
+    appPrincipalId: identity.outputs.principalId
+  }
+}
+
+module agentApp 'modules/agent_containerapp.bicep' = {
+  name: 'agentApp'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    environmentId: containerapp.outputs.environmentId
+    appName: 'ca-agent-rt-${resourceToken}'
+    userAssignedIdentityId: identity.outputs.id
+    userAssignedIdentityClientId: identity.outputs.clientId
+    acrLoginServer: registry.outputs.loginServer
+    foundryOpenAiEndpoint: foundry.outputs.openAiEndpoint
+    foundryDeploymentName: foundry.outputs.deploymentName
+    foundryProjectEndpoint: foundry.outputs.projectEndpoint
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    mcpBaseUrl: 'https://${containerapp.outputs.appFqdn}/mcp'
+    mcpApiKeySecretUri: kv.outputs.mcpApiKeySecretUri
+    externalIngress: externalIngressBool
+    azdServiceName: 'agent'
+  }
+}
+
+module evalJob 'modules/eval_job.bicep' = {
+  name: 'evalJob'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    environmentId: containerapp.outputs.environmentId
+    jobName: 'caj-eval-rt-${resourceToken}'
+    userAssignedIdentityId: identity.outputs.id
+    userAssignedIdentityClientId: identity.outputs.clientId
+    acrLoginServer: registry.outputs.loginServer
+    agentChatUrl: 'https://${agentApp.outputs.appFqdn}/chat'
+    azureOpenAiEndpoint: foundry.outputs.openAiEndpoint
+    azureOpenAiDeployment: foundry.outputs.deploymentName
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
   }
 }
 
@@ -166,3 +225,14 @@ output AZURE_LOG_ANALYTICS_WORKSPACE_NAME string = monitoring.outputs.workspaceN
 output AZURE_MAPS_CLIENT_ID string = identity.outputs.clientId
 
 output AZURE_VNET_NAME string = network.outputs.vnetName
+
+output AZURE_AI_FOUNDRY_ACCOUNT_NAME string = foundry.outputs.accountName
+output AZURE_AI_FOUNDRY_PROJECT_NAME string = foundry.outputs.projectName
+output AZURE_AI_FOUNDRY_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
+output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
+output AZURE_OPENAI_DEPLOYMENT string = foundry.outputs.deploymentName
+
+output AZURE_AGENT_CONTAINER_APP_NAME string = agentApp.outputs.appName
+output AZURE_AGENT_CONTAINER_APP_FQDN string = agentApp.outputs.appFqdn
+
+output AZURE_EVAL_JOB_NAME string = evalJob.outputs.jobName

@@ -15,14 +15,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
 from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 
 
 async def _run(url: str) -> int:
     print(f"[smoke] connecting to {url}")
-    async with Client(url) as client:
+    api_key = os.environ.get("MCP_API_KEY")
+    headers = {"x-api-key": api_key} if api_key else None
+    if headers:
+        print("[smoke] x-api-key header attached from MCP_API_KEY")
+    transport = StreamableHttpTransport(url, headers=headers)
+    async with Client(transport) as client:
         tools = await client.list_tools()
         names = sorted(t.name for t in tools)
         print(f"[smoke] tools registered: {names}")

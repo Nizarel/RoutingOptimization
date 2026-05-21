@@ -1,0 +1,29 @@
+# Excel lock files (cause remote build failures when file is open)
+~$*
+*.~lock*
+
+# Local Python artifacts
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# IDE / VCS
+.git/
+.github/
+.vscode/
+.azure/
+
+# Not needed at runtime (Dockerfile only COPYs pyproject.toml, README.md, src/)
+data/
+tests/
+scripts/
+infra/
+azure.yaml
+Routing_Optimization_MCP_Server_Spec_Architecture.md
+
+# Local env
+.env
+.env.local

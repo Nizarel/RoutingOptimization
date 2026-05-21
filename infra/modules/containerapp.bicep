@@ -64,6 +64,9 @@ param externalIngress bool = false
 @description('Service tag matching the azure.yaml services.<name> key. Used by azd to discover the app.')
 param azdServiceName string = 'mcp'
 
+@description('Optional Key Vault secret URI for the MCP API key. When empty, no auth env var is injected.')
+param mcpApiKeySecretUri string = ''
+
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
   name: last(split(logAnalyticsWorkspaceId, '/'))
 }
@@ -129,6 +132,13 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           identity: userAssignedIdentityId
         }
       ]
+      secrets: empty(mcpApiKeySecretUri) ? [] : [
+        {
+          name: 'mcp-api-key'
+          keyVaultUrl: mcpApiKeySecretUri
+          identity: userAssignedIdentityId
+        }
+      ]
     }
     template: {
       containers: [
@@ -139,7 +149,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json(cpu)
             memory: memory
           }
-          env: [
+          env: concat([
             { name: 'AZURE_CLIENT_ID',                       value: userAssignedIdentityClientId }
             { name: 'AZURE_COSMOS_ENDPOINT',                 value: cosmosEndpoint }
             { name: 'AZURE_COSMOS_DATABASE',                 value: cosmosDatabase }
@@ -149,7 +159,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'MCP_TRANSPORT',                         value: 'http' }
             { name: 'MCP_HTTP_HOST',                         value: '0.0.0.0' }
             { name: 'MCP_HTTP_PORT',                         value: string(targetPort) }
-          ]
+          ], empty(mcpApiKeySecretUri) ? [] : [
+            { name: 'MCP_API_KEY', secretRef: 'mcp-api-key' }
+          ])
           probes: [
             {
               type: 'Liveness'

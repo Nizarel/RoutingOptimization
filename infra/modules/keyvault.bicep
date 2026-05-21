@@ -18,6 +18,10 @@ param principalType string = 'User'
 @description('Object ID of the application principal (typically a UAMI) granted Key Vault Secrets User (read-only). Empty to skip.')
 param appPrincipalId string = ''
 
+@secure()
+@description('Optional MCP API key value. When non-empty, persisted as the "mcp-api-key" secret.')
+param mcpApiKey string = ''
+
 resource kv 'Microsoft.KeyVault/vaults@2024-04-01-preview' = {
   name: name
   location: location
@@ -61,5 +65,15 @@ resource appRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
+resource mcpApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = if (!empty(mcpApiKey)) {
+  parent: kv
+  name: 'mcp-api-key'
+  properties: {
+    value: mcpApiKey
+    contentType: 'text/plain'
+  }
+}
+
 output name string = kv.name
 output uri string = kv.properties.vaultUri
+output mcpApiKeySecretUri string = empty(mcpApiKey) ? '' : mcpApiKeySecret.properties.secretUri

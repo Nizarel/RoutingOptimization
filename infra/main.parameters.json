@@ -16,6 +16,9 @@
     },
     "externalIngress": {
       "value": "${EXTERNAL_INGRESS=true}"
+    },
+    "mcpApiKey": {
+      "value": "${MCP_API_KEY=}"
     }
   }
 }
