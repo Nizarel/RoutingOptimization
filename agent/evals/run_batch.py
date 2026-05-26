@@ -97,9 +97,12 @@ async def main() -> int:
             print("[eval] loading GroundednessEvaluator...")
             groundedness = _build_groundedness_evaluator(cfg["judge"])
 
+    judge_delay = float(cfg.get("judge", {}).get("inter_row_delay_sec", 0))
     results: list[dict[str, Any]] = []
     async with httpx.AsyncClient() as client:
         for i, row in enumerate(rows, 1):
+            if i > 1 and judge_delay > 0:
+                await asyncio.sleep(judge_delay)
             qid = row["id"]
             query = row["query"]
             expected_calls = row.get("expected_tool_calls", [])

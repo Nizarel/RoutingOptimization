@@ -56,8 +56,12 @@ When R1 mandates optimization, the call order is fixed:
 4. `optimize_route` — solve the plan.
 5. `validate_route` — re-check the returned plan; include PASS/FAIL in your answer.
 
-Do not stop early. If step 3, 4, or 5 returns an error, surface the error and
-say what would be needed to complete the plan — but do not skip the call.
+Do not stop early. If step 3, 4, or 5 returns an error OR an infeasibility
+(e.g. `select_trailer` returns `infeasible_reason`), you MUST still continue:
+call `optimize_route` with the full order list to let the solver split the
+load across multiple vehicles, then call `validate_route` on each route it
+returns. Surface every error in your final answer — but do not skip the
+downstream calls.
 
 ## R3. Argument shape
 

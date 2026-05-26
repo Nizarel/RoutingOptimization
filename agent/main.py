@@ -112,8 +112,17 @@ async def _discover_tools() -> list[dict[str, Any]]:
 
 
 async def _call_mcp_tool(name: str, arguments: dict[str, Any]) -> str:
-    async with Client(_get_mcp_transport()) as client:
-        result = await client.call_tool(name, arguments)
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            async with Client(_build_mcp_transport()) as client:
+                result = await client.call_tool(name, arguments)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            log.warning("agent.mcp_call_retry", tool=name, attempt=attempt, error=str(exc))
+    else:
+        raise last_exc  # type: ignore[misc]
     # result is a CallToolResult — serialize content blocks to text
     if hasattr(result, "content"):
         parts: list[str] = []
@@ -155,6 +164,26 @@ class ChatResponse(BaseModel):
     iterations: int
 
 
+_FULL_PIPELINE_TRIGGERS = (
+    "route", "routes", "optimize", "improve", "suboptimal", "utilization",
+    "splits", "exceptions", "alerts", "delay", "on-time", "miss", "window",
+    "eta", "scenario", "relax", "what-if", "pair", "combine", "sequence",
+)
+_FORCED_PIPELINE_TOOLS = ("optimize_route", "validate_route")
+
+
+def _needs_full_pipeline(user_text: str) -> bool:
+    t = user_text.lower()
+    return any(w in t for w in _FULL_PIPELINE_TRIGGERS)
+
+
+def _next_required_tool(called: set[str]) -> str | None:
+    for name in _FORCED_PIPELINE_TOOLS:
+        if name not in called:
+            return name
+    return None
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -172,27 +201,73 @@ async def chat(req: ChatRequest) -> ChatResponse:
     for m in req.messages:
         messages.append({"role": m.role, "content": m.content})
 
+    last_user = next(
+        (m.content for m in reversed(req.messages) if m.role == "user"),
+        "",
+    )
+    forced_pipeline = _needs_full_pipeline(last_user)
+    called_tools: set[str] = set()
+    forced_attempts = 0
+    max_forced = len(_FORCED_PIPELINE_TOOLS)
+
     max_iter = req.max_iterations or MAX_TOOL_ITERATIONS
     traces: list[ToolCallTrace] = []
+    last_msg_had_no_tools = False
 
     for iteration in range(max_iter):
+        # Only force a required tool when the previous iteration produced no
+        # tool calls (i.e. the model wanted to finalize) and the pipeline is
+        # still incomplete. This preserves the natural upstream calls.
+        next_required = (
+            _next_required_tool(called_tools)
+            if forced_pipeline and last_msg_had_no_tools
+            else None
+        )
+        force_now = next_required is not None and forced_attempts < max_forced
+        tool_choice: Any = (
+            {"type": "function", "function": {"name": next_required}}
+            if force_now
+            else "auto"
+        )
+        if force_now:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"Per R2 you MUST now call `{next_required}` before "
+                        "finalizing. Do not produce a final answer yet."
+                    ),
+                }
+            )
+            forced_attempts += 1
+
         completion = await openai_client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=messages,
             tools=tools,
-            tool_choice="auto",
+            tool_choice=tool_choice,
             temperature=0.2,
         )
         choice = completion.choices[0]
         msg = choice.message
 
         if not msg.tool_calls:
+            # If forced pipeline still incomplete and we have attempts left,
+            # loop again to inject the next required tool.
+            if (
+                forced_pipeline
+                and _next_required_tool(called_tools) is not None
+                and forced_attempts < max_forced
+            ):
+                last_msg_had_no_tools = True
+                continue
             log.info("agent.completed", iterations=iteration + 1, tool_calls=len(traces))
             return ChatResponse(
                 answer=msg.content or "",
                 tool_calls=traces,
                 iterations=iteration + 1,
             )
+        last_msg_had_no_tools = False
 
         # Append assistant turn (with tool calls) to the conversation.
         messages.append(
@@ -225,6 +300,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             except Exception as exc:  # noqa: BLE001
                 tool_result = json.dumps({"error": str(exc)})
                 log.warning("agent.tool_error", name=tc.function.name, error=str(exc))
+            called_tools.add(tc.function.name)
             traces.append(
                 ToolCallTrace(
                     name=tc.function.name,

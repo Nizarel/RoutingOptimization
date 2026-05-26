@@ -16,6 +16,9 @@ judge:
   azure_endpoint: https://aif-rt-vqcz36euruiko.openai.azure.com/
   azure_deployment: gpt-4.1
   api_version: "2024-10-21"
+  # Sleep between rows to space out judge calls against the same deployment
+  # (gpt-4.1 GlobalStandard cap=50). 8 s ≈ stays under 8 rpm per row.
+  inter_row_delay_sec: 8
 
 evaluators:
   - name: tool_correctness
